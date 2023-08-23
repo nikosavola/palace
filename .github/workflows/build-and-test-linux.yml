@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - 37-run-clang-tidy-ci
   pull_request:
 
 concurrency:
