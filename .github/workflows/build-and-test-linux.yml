@@ -201,8 +201,18 @@ jobs:
             -DPALACE_WITH_STRUMPACK=$WITH_STRUMPACK \
             -DPALACE_WITH_MUMPS=$WITH_MUMPS \
             -DPALACE_WITH_SLEPC=$WITH_SLEPC \
-            -DPALACE_WITH_ARPACK=$WITH_ARPACK
+            -DPALACE_WITH_ARPACK=$WITH_ARPACK \
+            -DANALYZE_SOURCES_CLANG_TIDY=true
           make -j$NUM_PROC_BUILD
+
+      - name: Run clang-tidy
+        run: |
+          wget -O- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo apt-key add -
+          sudo add-apt-repository 'deb http://apt.llvm.org/bullseye/ llvm-toolchain-bullseye-16 main'
+          sudo apt-get update -q
+          sudo apt-get install -y clang-tidy-16
+          run-clang-tidy-16
+
 
       - name: Run tests
         env:
