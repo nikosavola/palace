@@ -1,9 +1,24 @@
 Bootstrap: docker
 From: rockylinux:9
 
+%arguments
+    PALACE_WITH_CUDA=OFF
+    PALACE_WITH_HIP=OFF
+    PALACE_WITH_GPU_AWARE_MPI=OFF
+
 %help
     This container contains Palace compiled with all dependencies.
-    `singularity run palace.sif <ARGS...>` is equivalent to `palace <ARGS...>`.
+    singularity run palace.sif [ARGS...] is equivalent to palace [ARGS...].
+    
+    GPU Support:
+    The container supports optional GPU compilation via build arguments:
+    - PALACE_WITH_CUDA=ON: Enable CUDA support for NVIDIA GPUs
+    - PALACE_WITH_HIP=ON: Enable HIP support for AMD GPUs  
+    - PALACE_WITH_GPU_AWARE_MPI=ON: Enable GPU-aware MPI
+    
+    Example usage:
+    singularity build --build-arg PALACE_WITH_CUDA=ON palace.sif singularity.def
+    singularity run --nv palace.sif [ARGS...]
 
 %labels
     org.opencontainers.image.title Palace
@@ -17,6 +32,18 @@ From: rockylinux:9
         export PATH="$PATH:/usr/lib64/mpich/bin"
     fi
     export PATH="$PATH:/opt/palace/bin"
+    
+    # Add CUDA to path if available
+    if [[ -d /usr/local/cuda ]]; then
+        export PATH="/usr/local/cuda/bin:$PATH"
+        export LD_LIBRARY_PATH="/usr/local/cuda/lib64:$LD_LIBRARY_PATH"
+    fi
+    
+    # Add ROCm to path if available
+    if [[ -d /opt/rocm ]]; then
+        export PATH="/opt/rocm/bin:$PATH"
+        export LD_LIBRARY_PATH="/opt/rocm/lib:$LD_LIBRARY_PATH"
+    fi
 
 %runscript
     exec palace "$@"
@@ -63,35 +90,74 @@ From: rockylinux:9
         export PATH="$PATH:/usr/lib64/mpich/bin"
     fi
 
+    # Install CUDA compiler if requested
+    if [[ "${PALACE_WITH_CUDA}" == "ON" ]]; then
+        dnf config-manager --add-repo https://developer.download.nvidia.com/compute/cuda/repos/rhel9/x86_64/cuda-rhel9.repo
+        dnf install -y cuda-nvcc-12-6 cuda-cudart-devel-12-6 cuda-driver-devel-12-6
+        export PATH="/usr/local/cuda/bin:$PATH"
+        export LD_LIBRARY_PATH="/usr/local/cuda/lib64:$LD_LIBRARY_PATH"
+    fi
+
+    # Install HIP/ROCm compiler if requested
+    if [[ "${PALACE_WITH_HIP}" == "ON" ]]; then
+        dnf install -y https://repo.radeon.com/amdgpu-install/6.2.2/rhel/9.4/amdgpu-install-6.2.60202-1.el9.noarch.rpm
+        amdgpu-install -y --usecase=hiplibsdk --no-dkms
+        export PATH="/opt/rocm/bin:$PATH"
+        export LD_LIBRARY_PATH="/opt/rocm/lib:$LD_LIBRARY_PATH"
+    fi
+
     # Show compiler information
     mpicc -v
     mpif90 -v
+    if [[ "${PALACE_WITH_CUDA}" == "ON" ]]; then
+        nvcc --version
+    fi
+    if [[ "${PALACE_WITH_HIP}" == "ON" ]]; then
+        hipcc --version
+    fi
 
     # Build and install Palace
     if [[ -z "$(ls -A /opt/palace-src)" ]]; then
         git clone https://github.com/awslabs/palace.git /opt/palace-src
     fi
     mkdir /opt/palace-build && cd /opt/palace-build
-    cmake /opt/palace-src \
-        -DCMAKE_INSTALL_PREFIX=/opt/palace \
-        -DCMAKE_CXX_COMPILER=g++ \
-        -DCMAKE_CXX_FLAGS="$OPT_FLAGS" \
-        -DCMAKE_C_COMPILER=gcc \
-        -DCMAKE_C_FLAGS="$OPT_FLAGS" \
-        -DCMAKE_Fortran_COMPILER=gfortran \
-        -DCMAKE_Fortran_FLAGS="$OPT_FLAGS" \
-        -DBUILD_SHARED_LIBS:BOOL=ON \
-        -DPALACE_WITH_64BIT_INT:BOOL=OFF \
-        -DPALACE_WITH_OPENMP:BOOL=ON \
-        -DPALACE_WITH_CUDA:BOOL=OFF \
-        -DPALACE_WITH_HIP:BOOL=OFF \
-        -DPALACE_WITH_SUPERLU:BOOL=ON \
-        -DPALACE_WITH_STRUMPACK:BOOL=ON \
-        -DPALACE_WITH_MUMPS:BOOL=ON \
-        -DPALACE_WITH_SLEPC:BOOL=ON \
-        -DPALACE_WITH_ARPACK:BOOL=ON \
-        -DPALACE_WITH_LIBXSMM:BOOL=ON \
-        -DPALACE_WITH_MAGMA:BOOL=ON \
+    
+    # Prepare cmake arguments
+    CMAKE_ARGS=(
+        -DCMAKE_INSTALL_PREFIX=/opt/palace
+        -DCMAKE_CXX_COMPILER=g++
+        -DCMAKE_CXX_FLAGS="$OPT_FLAGS"
+        -DCMAKE_C_COMPILER=gcc
+        -DCMAKE_C_FLAGS="$OPT_FLAGS"
+        -DCMAKE_Fortran_COMPILER=gfortran
+        -DCMAKE_Fortran_FLAGS="$OPT_FLAGS"
+        -DBUILD_SHARED_LIBS:BOOL=ON
+        -DPALACE_WITH_64BIT_INT:BOOL=OFF
+        -DPALACE_WITH_OPENMP:BOOL=ON
+        -DPALACE_WITH_CUDA:BOOL=${PALACE_WITH_CUDA}
+        -DPALACE_WITH_HIP:BOOL=${PALACE_WITH_HIP}
+        -DPALACE_WITH_GPU_AWARE_MPI:BOOL=${PALACE_WITH_GPU_AWARE_MPI}
+        -DPALACE_WITH_SUPERLU:BOOL=ON
+        -DPALACE_WITH_STRUMPACK:BOOL=ON
+        -DPALACE_WITH_MUMPS:BOOL=ON
+        -DPALACE_WITH_SLEPC:BOOL=ON
+        -DPALACE_WITH_ARPACK:BOOL=ON
+        -DPALACE_WITH_LIBXSMM:BOOL=ON
+        -DPALACE_WITH_MAGMA:BOOL=ON
         -DPALACE_WITH_GSLIB:BOOL=ON
+    )
+    
+    # Add CUDA-specific arguments if enabled
+    if [[ "${PALACE_WITH_CUDA}" == "ON" ]]; then
+        CMAKE_ARGS+=(-DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc)
+        CMAKE_ARGS+=(-DCMAKE_CUDA_ARCHITECTURES="70;75;80;86")
+    fi
+    
+    # Add HIP-specific arguments if enabled  
+    if [[ "${PALACE_WITH_HIP}" == "ON" ]]; then
+        CMAKE_ARGS+=(-DCMAKE_HIP_COMPILER=/opt/rocm/bin/hipcc)
+    fi
+    
+    cmake /opt/palace-src "${CMAKE_ARGS[@]}"
     make -j"$(nproc)"
     cd .. && rm -rf palace-build
