@@ -1,0 +1,78 @@
+Bootstrap: docker
+From: {{ build.image }}
+Stage: build
+
+# Singularity definition template for `spack containerize`, extending
+# Spack's default template with:
+#   - a pass-through %runscript, so `apptainer run palace.sif palace
+#     <ARGS...>` works like the Docker image's entry point,
+#   - %help and %labels metadata for `apptainer run --help` and
+#     `apptainer inspect`,
+#   - TAR_OPTIONS=--no-same-owner, so the NVIDIA CUDA .run installer
+#     extracts cleanly under `apptainer build --fakeroot` (see the
+#     comment at the export).
+# Select it from the manifest with container: {format: singularity,
+# template: PalaceSingularity} and a config: template_dirs entry that
+# contains this file.
+
+%post
+  # Create the manifest file for the installation in /opt/spack-environment
+  mkdir /opt/spack-environment && cd /opt/spack-environment
+  cat << EOF > spack.yaml
+{{ manifest }}
+EOF
+
+  # Install all the required software
+  . /opt/spack/share/spack/setup-env.sh
+  # Under `apptainer build --fakeroot` on a host without /etc/subuid
+  # entries, %post runs in a root-mapped namespace under libfakeroot
+  # (LD_PRELOAD), but the spack build environment that invokes the
+  # NVIDIA CUDA .run installer drops LD_PRELOAD, so the payload's
+  # embedded uid/gid chowns reach the real syscall and fail with EINVAL
+  # (tar exits 2, makeself aborts the install). Harmless otherwise:
+  # extracted files simply keep the invoking user's ownership.
+  export TAR_OPTIONS=--no-same-owner
+  spack -e . concretize
+  spack -e . install
+  spack gc -y
+  spack env activate --sh -d . >> /opt/spack-environment/environment_modifications.sh
+
+  # Strip the binaries to reduce the size of the image
+  find -L /opt/views/view/* -type f -exec readlink -f '{}' \; | \
+    xargs file -i | \
+    grep 'charset=binary' | \
+    grep 'x-executable\|x-archive\|x-sharedlib' | \
+    awk -F: '{print $1}' | xargs strip
+
+Bootstrap: docker
+From: {{ run.image }}
+Stage: final
+
+%files from build
+  /opt/spack-environment /opt
+  /opt/software /opt
+  /opt/views /opt
+  /opt/spack-environment/environment_modifications.sh /opt/spack-environment/environment_modifications.sh
+
+%post
+
+  # Symlink the old view location
+  ln -s /opt/views/view /opt/view
+
+  # Modify the environment without relying on sourcing shell specific files at startup
+  cat /opt/spack-environment/environment_modifications.sh >> $SINGULARITY_ENVIRONMENT
+
+%runscript
+  exec "$@"
+
+%help
+  This container contains Palace compiled with all dependencies.
+  `apptainer run palace.sif palace <ARGS...>` is equivalent to
+  `palace <ARGS...>`; `apptainer exec palace.sif palace <ARGS...>`
+  works as well.
+
+%labels
+  org.opencontainers.image.title Palace
+  org.opencontainers.image.source https://github.com/awslabs/palace
+  org.opencontainers.image.vendor AWS Labs
+  org.opencontainers.image.base.name {{ run.image }}
