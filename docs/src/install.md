@@ -81,14 +81,13 @@ environment.
 ### Generating a container recipe
 
 Create a Spack environment file (`spack.yaml`) with the desired *Palace*
-configuration. A minimal example for a Singularity image:
+configuration. A minimal example:
 
 ```yaml
 spack:
   specs:
     - palace
   container:
-    format: singularity
     images:
       os: "ubuntu:24.04"
       spack: develop
@@ -97,11 +96,47 @@ spack:
 Then generate the recipe and build:
 
 ```bash
-# Docker/Podman
 spack containerize > Dockerfile
-podman build --format docker -t palace:latest .  # or docker, or any other OCI-compatible tool 
+podman build --format docker -t palace:latest .  # or docker, or any other OCI-compatible tool
+```
 
-# Singularity/Apptainer
+For Singularity/Apptainer, set `format: singularity` in the `container`
+section and use `apptainer` (or `singularity`) to build:
+
+```bash
+spack containerize > palace.def
+apptainer build palace.sif palace.def
+```
+
+On hosts where you do not have root privileges, use `apptainer build
+--fakeroot` instead.
+
+For a more polished image, *Palace* also provides
+[`.github/actions/build-container/spack_env/PalaceSingularity`](https://github.com/awslabs/palace/blob/main/.github/actions/build-container/spack_env/PalaceSingularity),
+a definition template extending Spack's default one with a `%runscript` (so
+`apptainer run palace.sif palace <ARGS...>` works like the Docker image's
+entry point), `%help` and `%labels` metadata, and a fix for installing the
+NVIDIA CUDA toolkit from within `apptainer build --fakeroot`. To use it,
+download the template next to `spack.yaml` and reference it from the
+environment:
+
+```yaml
+spack:
+  specs:
+    - palace
+  config:
+    template_dirs:
+      - .
+  container:
+    format: singularity
+    template: PalaceSingularity
+    images:
+      os: "ubuntu:24.04"
+      spack: develop
+```
+
+```bash
+curl -LsO https://raw.githubusercontent.com/awslabs/palace/main/.github/actions/build-container/spack_env/PalaceSingularity
 spack containerize > palace.def
 apptainer build palace.sif palace.def
 ```
@@ -112,6 +147,13 @@ Dockerfile template that handles *Palace*-specific setup, see
 
 You can customize your *Palace* installation by adding variants to the `palace`
 spec (e.g., compiling with other solvers or with GPU support).
+
+!!! note "Building with CUDA"
+
+    When building a CUDA-enabled image from a batch job or another context
+    without a controlling terminal, the NVIDIA CUDA `.run` installer used by
+    the `cuda` package fails; wrap the build in a pseudo-terminal, e.g.
+    `script -qec "apptainer build palace.sif palace.def" /dev/null`.
 
 ## Build from source
 
