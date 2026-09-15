@@ -1,3 +1,157 @@
+diff --git a/backends/occa/ceed-occa-elem-restriction.cpp b/backends/occa/ceed-occa-elem-restriction.cpp
+index 026f45d9..765059fd 100644
+--- a/backends/occa/ceed-occa-elem-restriction.cpp
++++ b/backends/occa/ceed-occa-elem-restriction.cpp
+@@ -278,6 +278,104 @@ int ElemRestriction::apply(CeedTransposeMode rTransposeMode, Vector &u, Vector &
+   return CEED_ERROR_SUCCESS;
+ }
+ 
++// libCEED's operator-fallback mechanism (CeedOperatorGetFallback /
++// CeedOperatorCreateFallback, interface/ceed-preconditioning.c) reuses the
++// *original* CeedElemRestriction/CeedBasis objects directly on a fallback
++// CeedOperator that lives on a different (reference) Ceed, while any
++// CeedVectors the generic fallback algorithms create (e.g.
++// CeedOperatorAssembleSymbolicSingle's index_vec_in/elem_dof_in) are created
++// on that fallback Ceed. When CeedElemRestrictionApply is then called with
++// this (OCCA-backed) restriction against one of those foreign vectors,
++// Vector::from() below would reinterpret the foreign vector's own
++// backend-private data as a ceed::occa::Vector*, which is undefined
++// behavior (observed in practice as a segfault deep inside OCCA's memory
++// bookkeeping). Detect this and route through a plain host-array
++// implementation instead, which works correctly regardless of which Ceed
++// created u/v since it only uses the generic CeedVector array API.
++static bool ceedVectorIsForeign(CeedVector vec, Ceed expectedCeed) {
++  if (!vec || vec == CEED_VECTOR_NONE) {
++    return false;
++  }
++  Ceed vecCeed;
++  if (CeedVectorGetCeed(vec, &vecCeed)) {
++    // Could not determine the vector's Ceed -- be conservative and treat it
++    // as foreign so the safe, generic path is used.
++    return true;
++  }
++  const bool foreign = (vecCeed != expectedCeed);
++  CeedDestroy(&vecCeed);
++  return foreign;
++}
++
++int ElemRestriction::applyGeneric(CeedTransposeMode rTransposeMode, CeedVector u, CeedVector v) {
++  const bool rIsTransposed = (rTransposeMode != CEED_NOTRANSPOSE);
++  const bool usesIdx       = usesIndices();
++
++  // hostIndices is only populated when the restriction was created with
++  // CEED_MEM_HOST (the common case); fall back to reading device memory
++  // back to the host otherwise.
++  CeedInt *hostIdx    = hostIndices;
++  CeedInt *ownedHostIdx = NULL;
++  if (usesIdx && !hostIdx) {
++    const CeedInt entries = ceedElementCount * ceedElementSize;
++    ownedHostIdx          = (CeedInt *)::malloc(entries * sizeof(CeedInt));
++    indices.copyTo(ownedHostIdx);
++    hostIdx = ownedHostIdx;
++  }
++
++  if (!rIsTransposed) {
++    const CeedScalar *uArray;
++    CeedScalar       *vArray;
++    CeedCallBackend(CeedVectorGetArrayRead(u, CEED_MEM_HOST, &uArray));
++    CeedCallBackend(CeedVectorGetArrayWrite(v, CEED_MEM_HOST, &vArray));
++    for (CeedInt e = 0; e < ceedElementCount; ++e) {
++      for (CeedInt node = 0; node < ceedElementSize; ++node) {
++        const CeedInt vBase = node + e * ceedElementSize * ceedComponentCount;
++        if (usesIdx) {
++          const CeedInt index = hostIdx[node + e * ceedElementSize];
++          for (CeedInt c = 0; c < ceedComponentCount; ++c) {
++            vArray[vBase + c * ceedElementSize] = uArray[index + c * ceedUnstridedComponentStride];
++          }
++        } else {
++          for (CeedInt c = 0; c < ceedComponentCount; ++c) {
++            vArray[vBase + c * ceedElementSize] =
++                uArray[node * ceedNodeStride + c * ceedComponentStride + e * ceedElementStride];
++          }
++        }
++      }
++    }
++    CeedCallBackend(CeedVectorRestoreArrayRead(u, &uArray));
++    CeedCallBackend(CeedVectorRestoreArray(v, &vArray));
++  } else {
++    const CeedScalar *uArray;
++    CeedScalar       *vArray;
++    CeedCallBackend(CeedVectorGetArrayRead(u, CEED_MEM_HOST, &uArray));
++    CeedCallBackend(CeedVectorGetArray(v, CEED_MEM_HOST, &vArray));
++    for (CeedInt e = 0; e < ceedElementCount; ++e) {
++      for (CeedInt node = 0; node < ceedElementSize; ++node) {
++        const CeedInt uBase = node + e * ceedElementSize * ceedComponentCount;
++        if (usesIdx) {
++          const CeedInt index = hostIdx[node + e * ceedElementSize];
++          for (CeedInt c = 0; c < ceedComponentCount; ++c) {
++            vArray[index + c * ceedUnstridedComponentStride] += uArray[uBase + c * ceedElementSize];
++          }
++        } else {
++          for (CeedInt c = 0; c < ceedComponentCount; ++c) {
++            vArray[node * ceedNodeStride + c * ceedComponentStride + e * ceedElementStride] += uArray[uBase + c * ceedElementSize];
++          }
++        }
++      }
++    }
++    CeedCallBackend(CeedVectorRestoreArrayRead(u, &uArray));
++    CeedCallBackend(CeedVectorRestoreArray(v, &vArray));
++  }
++
++  if (ownedHostIdx) {
++    ::free(ownedHostIdx);
++  }
++  return CEED_ERROR_SUCCESS;
++}
++
+ int ElemRestriction::getOffsets(CeedMemType memType, const CeedInt **offsets) {
+   switch (memType) {
+     case CEED_MEM_HOST: {
+@@ -334,12 +432,25 @@ int ElemRestriction::ceedCreate(CeedMemType memType, CeedCopyMode copyMode, cons
+ 
+ int ElemRestriction::ceedApply(CeedElemRestriction r, CeedTransposeMode tmode, CeedVector u, CeedVector v, CeedRequest *request) {
+   ElemRestriction *elemRestriction = ElemRestriction::from(r);
+-  Vector          *uVector         = Vector::from(u);
+-  Vector          *vVector         = Vector::from(v);
+ 
+   if (!elemRestriction) {
+     return staticCeedError("Incorrect CeedElemRestriction argument: r");
+   }
++
++  // See the comment on ceedVectorIsForeign() above: u/v may belong to a
++  // different Ceed than this restriction (e.g. libCEED's operator-fallback
++  // mechanism), in which case they must not be treated as
++  // ceed::occa::Vector's.
++  Ceed ceed;
++  CeedCallBackend(CeedElemRestrictionGetCeed(r, &ceed));
++  const bool foreign = ceedVectorIsForeign(u, ceed) || ceedVectorIsForeign(v, ceed);
++  CeedCallBackend(CeedDestroy(&ceed));
++  if (foreign) {
++    return elemRestriction->applyGeneric(tmode, u, v);
++  }
++
++  Vector *uVector = Vector::from(u);
++  Vector *vVector = Vector::from(v);
+   if (!uVector) {
+     return elemRestriction->ceedError("Incorrect CeedVector argument: u");
+   }
+diff --git a/backends/occa/ceed-occa-elem-restriction.hpp b/backends/occa/ceed-occa-elem-restriction.hpp
+index 3fdc226d..b355df3a 100644
+--- a/backends/occa/ceed-occa-elem-restriction.hpp
++++ b/backends/occa/ceed-occa-elem-restriction.hpp
+@@ -72,6 +72,12 @@ class ElemRestriction : public CeedObject {
+ 
+   int apply(CeedTransposeMode rTransposeMode, Vector &u, Vector &v);
+ 
++  // Generic, host-array-based restriction apply that does not assume `u`/`v`
++  // are OCCA-backed vectors -- used when CeedElemRestrictionApply is called
++  // with vectors from a different (e.g. libCEED operator-fallback) Ceed. See
++  // ceedApply() below for why this is needed.
++  int applyGeneric(CeedTransposeMode rTransposeMode, CeedVector u, CeedVector v);
++
+   int getOffsets(CeedMemType memType, const CeedInt **offsets);
+ 
+   //---[ Ceed Callbacks ]-----------
 diff --git a/backends/occa/ceed-occa-operator.cpp b/backends/occa/ceed-occa-operator.cpp
 index 057a1311..fd9e75a7 100644
 --- a/backends/occa/ceed-occa-operator.cpp
