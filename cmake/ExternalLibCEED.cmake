@@ -152,10 +152,12 @@ message(STATUS "LIBCEED_OPTIONS: ${LIBCEED_OPTIONS_PRINT}")
 # used by Palace for tensor-product elements with non-trivial DOF
 # orientation), which ceed-occa did not support at all upstream (hard
 # CeedError, not just a stub) -- again via the generic host implementation.
-# Does NOT implement CeedElemRestrictionCreateCurlOriented (the tridiagonal
+# Also implements CeedElemRestrictionCreateCurlOriented (the tridiagonal
 # DOF-transformation restriction used by 3D Nedelec/H(curl) elements, e.g.
-# Palace's default edge-element spaces) -- ceed-occa still hard-errors on
-# this; see the doc for what that means for real Palace problems.
+# Palace's default edge-element spaces), ported directly from the reference
+# backend's tridiagonal apply cores and verified against it as an
+# independent oracle; see the doc for details and remaining caveats
+# (CUDA/HIP untested, no GPU toolchain on the VM this was developed on).
 if(PALACE_WITH_OCCA)
   set(LIBCEED_PATCH_FILES
     "${CMAKE_SOURCE_DIR}/extern/patch/libceed/patch_occa_operator_fallback.diff"
