@@ -99,16 +99,19 @@ if(PALACE_WITH_GSLIB)
   include(ExternalGSLIB)
 endif()
 
-# Add libCEED
-message(STATUS "==================== Configuring libCEED dependency ====================")
-include(ExternalLibCEED)
-
 # Add OCCA (experimental, for PALACE_WITH_OCCA -- see
-# docs/src/developer/apple-metal-occa-progress.md)
+# docs/src/developer/apple-metal-occa-progress.md). Must come before libCEED
+# and MFEM: both optionally DEPENDS on the "occa" ExternalProject_Add target,
+# which must already exist as a CMake target by the time their own
+# ExternalProject_Add(... DEPENDS occa ...) calls are evaluated.
 if(PALACE_WITH_OCCA)
   message(STATUS "====================== Configuring OCCA dependency ======================")
   include(ExternalOCCA)
 endif()
+
+# Add libCEED
+message(STATUS "==================== Configuring libCEED dependency ====================")
+include(ExternalLibCEED)
 
 # Add MFEM
 message(STATUS "====================== Configuring MFEM dependency =====================")

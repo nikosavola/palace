@@ -13,6 +13,9 @@ endif()
 if(PALACE_WITH_MAGMA)
   list(APPEND LIBCEED_DEPENDENCIES magma)
 endif()
+if(PALACE_WITH_OCCA AND PALACE_BUILD_EXTERNAL_DEPS)
+  list(APPEND LIBCEED_DEPENDENCIES occa)
+endif()
 
 # Note on recommended flags for libCEED (from Makefile, Spack):
 #   OPT: -O3 -g -march=native -ffp-contract=fast [-fopenmp-simd/-qopenmp-simd]
@@ -102,6 +105,23 @@ if(PALACE_WITH_MAGMA)
   list(APPEND LIBCEED_OPTIONS
     "MAGMA_DIR=${CMAKE_INSTALL_PREFIX}"
   )
+endif()
+
+# Experimental OCCA backend (ceed-occa; see PALACE_WITH_OCCA in the top-level
+# CMakeLists.txt and docs/src/developer/apple-metal-occa-progress.md). libCEED's
+# own Makefile auto-detects which OCCA modes to register from `occa modes`, run
+# against $(OCCA_DIR)/lib/libocca.*, so nothing mode-specific needs to be passed
+# here -- this only points libCEED at an OCCA install.
+if(PALACE_WITH_OCCA)
+  if(PALACE_BUILD_EXTERNAL_DEPS)
+    list(APPEND LIBCEED_OPTIONS
+      "OCCA_DIR=${CMAKE_INSTALL_PREFIX}"
+    )
+  else()
+    list(APPEND LIBCEED_OPTIONS
+      "OCCA_DIR=${OCCA_DIR}"
+    )
+  endif()
 endif()
 
 string(REPLACE ";" "; " LIBCEED_OPTIONS_PRINT "${LIBCEED_OPTIONS}")
