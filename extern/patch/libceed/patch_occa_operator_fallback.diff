@@ -1,0 +1,71 @@
+diff --git a/backends/occa/ceed-occa-operator.cpp b/backends/occa/ceed-occa-operator.cpp
+index 057a1311..fd9e75a7 100644
+--- a/backends/occa/ceed-occa-operator.cpp
++++ b/backends/occa/ceed-occa-operator.cpp
+@@ -96,11 +96,18 @@ int Operator::ceedCreate(CeedOperator op) {
+ 
+   CeedCallBackend(CeedOperatorSetData(op, operator_));
+ 
+-  CeedOccaRegisterFunction(op, "LinearAssembleQFunction", Operator::ceedLinearAssembleQFunction);
+-  CeedOccaRegisterFunction(op, "LinearAssembleQFunctionUpdate", Operator::ceedLinearAssembleQFunction);
+-  CeedOccaRegisterFunction(op, "LinearAssembleAddDiagonal", Operator::ceedLinearAssembleAddDiagonal);
+-  CeedOccaRegisterFunction(op, "LinearAssembleAddPointBlockDiagonal", Operator::ceedLinearAssembleAddPointBlockDiagonal);
+-  CeedOccaRegisterFunction(op, "CreateFDMElementInverse", Operator::ceedCreateFDMElementInverse);
++  // LinearAssembleQFunction/LinearAssembleQFunctionUpdate/
++  // LinearAssembleAddDiagonal/LinearAssembleAddPointBlockDiagonal/
++  // CreateFDMElementInverse are deliberately NOT registered here (left
++  // unregistered rather than pointed at the ceedLinearAssemble*/
++  // ceedCreateFDMElementInverse stubs below): the generic interface
++  // dispatcher (interface/ceed-preconditioning.c) only takes its
++  // "backend does not support this" error path when the backend function
++  // pointer is non-null; leaving it null lets it fall through to the
++  // reference-backend fallback Ceed registered in ceed-occa.cpp's
++  // initCeed() instead. Registering the stubs (as this file previously did
++  // unconditionally) actively prevented that fallback from ever being
++  // reached.
+   CeedOccaRegisterFunction(op, "ApplyAdd", Operator::ceedApplyAdd);
+   CeedOccaRegisterFunction(op, "Destroy", Operator::ceedDestroy);
+ 
+@@ -111,8 +118,8 @@ int Operator::ceedCreateComposite(CeedOperator op) {
+   Ceed ceed;
+   CeedCallBackend(CeedOperatorGetCeed(op, &ceed));
+ 
+-  CeedOccaRegisterFunction(op, "LinearAssembleAddDiagonal", Operator::ceedLinearAssembleAddDiagonal);
+-  CeedOccaRegisterFunction(op, "LinearAssembleAddPointBlockDiagonal", Operator::ceedLinearAssembleAddPointBlockDiagonal);
++  // See the comment in ceedCreate() above -- left unregistered so the
++  // fallback Ceed is used instead of a hard error.
+ 
+   return CEED_ERROR_SUCCESS;
+ }
+diff --git a/backends/occa/ceed-occa.cpp b/backends/occa/ceed-occa.cpp
+index eca2f4e7..a5d0bdd2 100644
+--- a/backends/occa/ceed-occa.cpp
++++ b/backends/occa/ceed-occa.cpp
+@@ -254,6 +254,27 @@ static int initCeed(const char *c_resource, Ceed ceed) {
+   ceed::occa::Context *context = new Context(::occa::device(deviceProps));
+   CeedCallBackend(CeedSetData(ceed, context));
+ 
++  // This backend does not implement CeedOperatorLinearAssembleQFunction (and
++  // the diagonal-/full-assembly routines built on it), so register a
++  // reference-backend fallback Ceed for those operations -- the same pattern
++  // backends/cuda-gen and backends/hip-gen use for their own unimplemented
++  // operations. See ceed-occa-operator.cpp: the LinearAssemble* backend
++  // function pointers are deliberately left unregistered so the generic
++  // interface dispatcher in interface/ceed-preconditioning.c falls through
++  // to this fallback instead of a hard "not implemented" error.
++  {
++    std::string fallbackResource = "/cpu/self/ref/serial";
++    if (mode == "CUDA") {
++      fallbackResource = "/gpu/cuda/ref";
++    } else if (mode == "HIP") {
++      fallbackResource = "/gpu/hip/ref";
++    }
++    Ceed ceedFallback;
++    CeedCallBackend(CeedInit(fallbackResource.c_str(), &ceedFallback));
++    CeedCallBackend(CeedSetOperatorFallbackCeed(ceed, ceedFallback));
++    CeedCallBackend(CeedDestroy(&ceedFallback));
++  }
++
+   return CEED_ERROR_SUCCESS;
+ }
+ 

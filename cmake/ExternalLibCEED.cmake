@@ -127,6 +127,38 @@ endif()
 string(REPLACE ";" "; " LIBCEED_OPTIONS_PRINT "${LIBCEED_OPTIONS}")
 message(STATUS "LIBCEED_OPTIONS: ${LIBCEED_OPTIONS_PRINT}")
 
+# Patch for the experimental ceed-occa backend (see PALACE_WITH_OCCA above and
+# docs/src/developer/apple-metal-occa-progress.md): as shipped, ceed-occa
+# registers hard "backend does not implement X" stubs for
+# LinearAssembleQFunction/LinearAssembleAddDiagonal/
+# LinearAssembleAddPointBlockDiagonal/CreateFDMElementInverse. Because
+# libCEED's generic operator dispatcher only takes its "not supported" path
+# when a backend leaves the corresponding function pointer unregistered
+# (null), registering these as always-failing stubs actively prevents
+# libCEED's own operator-fallback mechanism -- the same mechanism
+# backends/cuda-gen and backends/hip-gen use for their own unimplemented
+# operations -- from ever being reached. This patch leaves those functions
+# unregistered and registers a reference-backend fallback Ceed in
+# initCeed() instead, so CeedOperatorLinearAssembleAddDiagonal (used by
+# Palace's Jacobi/Chebyshev smoothers) transparently falls back to
+# /cpu/self/ref/serial (or /gpu/cuda/ref, /gpu/hip/ref) instead of aborting.
+# Does NOT fix CeedOperatorLinearAssembleSymbolic/CeedOperatorLinearAssemble
+# (full sparse-matrix assembly) -- that still segfaults via a separate,
+# deeper bug in how the fallback operator is constructed for
+# CeedElemRestriction-heavy paths; see the doc for the root cause.
+if(PALACE_WITH_OCCA)
+  set(LIBCEED_PATCH_FILES
+    "${CMAKE_SOURCE_DIR}/extern/patch/libceed/patch_occa_operator_fallback.diff"
+  )
+  set(LIBCEED_PATCH_COMMAND
+    git reset --hard &&
+    git clean -fd &&
+    git apply "${LIBCEED_PATCH_FILES}"
+  )
+else()
+  set(LIBCEED_PATCH_COMMAND "")
+endif()
+
 include(ExternalProject)
 ExternalProject_Add(libCEED
   DEPENDS           ${LIBCEED_DEPENDENCIES}
@@ -137,6 +169,7 @@ ExternalProject_Add(libCEED
   PREFIX            ${CMAKE_BINARY_DIR}/extern/libCEED-cmake
   BUILD_IN_SOURCE   TRUE
   UPDATE_COMMAND    ""
+  PATCH_COMMAND     ${LIBCEED_PATCH_COMMAND}
   CONFIGURE_COMMAND ""
   BUILD_COMMAND     ""
   INSTALL_COMMAND   ${CMAKE_MAKE_PROGRAM} ${LIBCEED_OPTIONS} install
