@@ -12,7 +12,15 @@ and verified on a Linux x86 VM with no Apple hardware. This carries the MFEM-sid
 work in the `occa-metal-apple-support` branch of
 [`nikosavola/mfem`](https://github.com/nikosavola/mfem) into Palace's own CMake
 superbuild, per the same branch/task in
-[`nikosavola/palace`](https://github.com/nikosavola/palace).
+[`nikosavola/palace`](https://github.com/nikosavola/palace). A second pass
+additionally wires and patches libCEED's own OCCA backend (`ceed-occa`) --
+see section 7 for what now genuinely works (`CeedOperatorApply` and
+Jacobi/Chebyshev diagonal assembly, verified with real numerics on
+`/cpu/self/occa` and `/cpu/openmp/occa`) and what still doesn't (full
+sparse-matrix assembly, needed by Palace's default AMS/AMG solves, segfaults
+via a separate libCEED bug -- section 7.6). Metal itself remains
+untouched/unreachable (section 8) -- no Apple hardware exists to test it,
+and it has its own additional blocker beyond what section 7 fixes.
 
 **Companion to:** the MFEM-side handoff doc,
 `doc/apple-metal-mlx-support-progress.md` in the `nikosavola/mfem` fork's
@@ -59,15 +67,22 @@ Do not oversell what this commit does. It is exactly what WP2 (build-system
 skeleton) asks for -- making the MFEM-side experiment buildable and pointable
 from Palace -- and nothing more.
 
-**Update:** the two routes above (Palace switching to `mfem::BilinearForm`, or
-libCEED growing a Metal backend) turned out not to be a clean either/or.
-libCEED already ships an OCCA backend of its own (`backends/occa`,
-`ceed-occa`) -- Palace's superbuild simply never built it. Section 7 below
-wires that up and reports what actually works and what doesn't; section 8
-covers Metal specifically. Short version: libCEED-via-OCCA is real but far
-more limited than it looks, and Metal has two independent blockers, not one.
-Read on rather than re-deriving this from the code -- it took a full pass
-through libCEED's own backend source and test harness to pin down.
+**Update (second pass):** the two routes above (Palace switching to
+`mfem::BilinearForm`, or libCEED growing a Metal backend) turned out not to be
+a clean either/or. libCEED already ships an OCCA backend of its own
+(`backends/occa`, `ceed-occa`) -- Palace's superbuild simply never built it.
+Section 7 wires that up, and after a second, deeper pass (including finding
+and fixing a real bug in `ceed-occa`, and finding and fixing a bug in this
+document's own earlier testing), the accurate summary is: **`CeedOperatorApply`
+and Palace's Jacobi/Chebyshev-smoother diagonal assembly now work correctly on
+`ceed-occa`, verified with real numerics -- but Palace's default AMS/AMG solve
+path still cannot complete end to end**, because full sparse-matrix assembly
+(needed by every AMS/AMG-preconditioned solve) hits a separate, deeper bug.
+Section 8 covers Metal specifically, which has its own, independent blocker on
+top of all of this. Read sections 7 and 8 in full -- an earlier draft of this
+document got the diagnosis in section 7.4 wrong (attributed to a missing
+`ceed-occa` include path; it was actually a bug in this document's own test
+harness), and that correction matters for anyone skimming just the headlines.
 
 ## 2. What was implemented, file by file
 
@@ -344,7 +359,27 @@ cmake --build build-metal --target mfem -j
 #    comparison, etc.) before assuming any of it works inside the Palace
 #    superbuild context too.
 
-# 6. If/when Palace's own operators are ever reconsidered for an OCCA/Metal
+# 6. Before touching Metal at all: try a real Palace run against
+#    /cpu/self/occa or /cpu/openmp/occa on real hardware, via the config
+#    file's "Backend" field under "Solver" (palace/utils/configfile.cpp,
+#    ceed_backend -- no Palace source change needed, ConfigureCeedBackend()
+#    in palace/main.cpp already passes this straight through to CeedInit()).
+#    Expect: any solve that avoids ParallelAssemble() (no AMS/AMG coarse
+#    level) has a real chance of working, per section 7's fixes. Any
+#    AMS/AMG-preconditioned solve (Palace's default) will very likely
+#    segfault at CeedOperatorLinearAssembleSymbolic -- see section 7.6 for
+#    the exact backtrace to expect and its root cause, before assuming this
+#    session's fix broke on real hardware.
+
+# 7. Only once 6 is understood on real hardware: revisit section 8 for
+#    Metal specifically. Fixing section 7.6's libCEED bug (or working around
+#    it Palace-side by avoiding ParallelAssemble() for ceed-occa) comes
+#    before the Metal registration/precision work in section 8.2 -- Metal
+#    inherits the same full-assembly blocker as CPU/OpenMP, so there is no
+#    point reaching for Metal-specific work until 7.6 is resolved one way
+#    or another.
+
+# 8. If/when Palace's own operators are ever reconsidered for an OCCA/Metal
 #    path (see section 1's "what this would actually require") -- that is a
 #    separate, much larger piece of work, starting from palace/fem/
 #    bilinearform.hpp and palace/fem/libceed/, not from this build-system
@@ -454,158 +489,309 @@ All three exit 0 with zero mismatch output. **This is real, verified-here
 correctness evidence for `ceed-occa`'s basis-apply (`CeedBasisApply`,
 `CEED_EVAL_INTERP`) kernels on both Serial and OpenMP OCCA modes.**
 
-### 7.4 Not what it looks like: `CeedOperatorApply` with a user QFunction does not work on `ceed-occa`, and this is upstream-acknowledged, not just untested
+### 7.4 Correction: the earlier "Operator+QFunction doesn't work" diagnosis was wrong -- it was this document's own test-harness bug
 
-This is the finding that matters most for Palace specifically, because it is
-exactly the code path Palace's own operators use.
+An earlier pass of this document (still visible in git history) claimed
+`CeedOperatorApply` with a user QFunction categorically does not work on
+`ceed-occa`, citing a crash on libCEED's own `tests/t500-operator.c` and
+`tests/junit.py`'s `'OCCA mode not supported'` skip rule for `t4*`/`t5*`/
+`ex`/`mfem`/`nek`/`petsc`/`fluids`/`solids`. **That diagnosis was incorrect.**
+The crash was real, but its cause was a bug in this document's own test
+harness, not in `ceed-occa`:
 
-**Reproduced directly:** compiling and running libCEED's own
-`tests/t500-operator.c` (creation, action, and destruction of a mass-matrix
-operator -- i.e. exactly a `CeedOperatorApplyAdd` with a user-supplied
-QFunction, the architecture Palace's curl-curl/mass assembly is built on)
-against `/cpu/self/occa` aborts:
+- `CeedAddJitSourceRoot(ceed, root)` requires `root` to end with a trailing
+  slash. `interface/ceed-jit-tools.c`'s `CeedPathConcatenate()` finds the
+  *last* `/` in the given root and keeps only up to and including it --
+  passing `.../extern/libCEED` (no trailing slash) silently truncates to
+  `.../extern/` before concatenating the relative path, so a real,
+  existing file is reported as "not found". Confirmed directly with a small
+  diagnostic calling `CeedGetJitSourceRoots`/`CeedGetJitAbsolutePath`
+  directly: with the root passed exactly as `nikosavola/palace`'s own
+  `palace/CMakeLists.txt` already does it
+  (`PALACE_LIBCEED_JIT_SOURCE_DIR=".../include/palace/"`, trailing slash
+  present), resolution succeeds; without it, it fails with the exact
+  "Couldn't find matching JiT source file" error this document originally
+  attributed to `ceed-occa`. **Palace's own code already gets this right** --
+  the bug was only in this document's ad hoc reproduction, never in Palace.
+- Separately, libCEED's own `t500-operator.h`/`t400-qfunction.h` (and the
+  installed `include/ceed/jit-source/gallery/*.h` headers) explicitly
+  `#include <ceed/types.h>`. `ceed-occa-qfunction.cpp`'s
+  `QFunction::getKernelProps()` already predefines `CeedInt`/`CeedScalar`/
+  `CEED_QFUNCTION` via `occa::properties` before including the qfunction
+  source, making that `#include` redundant for the OCCA path -- and when
+  OCCA's own kernel-source parser follows it (resolvable via the
+  `OCCA_INCLUDE_PATH` environment variable / `props["okl/include_paths"]`,
+  per `~/dev/occa-ref/src/occa/internal/lang/preprocessor.cpp`), it fails on
+  *that* header's own further nested quoted `#include "ceed-f64.h"` --
+  an OCCA parser limitation specific to files that redundantly re-include
+  `<ceed/types.h>`. **Palace's own QFunction headers do not do this**:
+  `grep -rn "#include <" palace/fem/qfunctions/` shows exactly one
+  angle-bracket include anywhere in that tree, `<math.h>` (in the
+  `utils_*_qf.h` helpers) -- never `<ceed/types.h>` or `<ceed.h>`. This
+  category of failure is specific to libCEED's own test/gallery headers, not
+  a real constraint on Palace's QFunctions.
+
+**Corrected, verified-here result:** building a QFunction in Palace's own
+style (no direct `<ceed/types.h>` include, real `<math.h>` usage via
+`sqrt`/`tanh`, matching `palace/fem/qfunctions/utils_*_qf.h`) into a real
+mass-matrix `CeedOperatorApplyAdd` (adapted from libCEED's own
+`tests/t500-operator.c`) and running it, with a fresh, hermetic
+`OCCA_CACHE_DIR` per run (ruling out the OCCA kernel-cache cross-contamination
+that made earlier ad hoc attempts in this session non-reproducible):
 
 ```
-.../t500-operator.h:8:2: Error: File does not exist
-#include <ceed/types.h>
-terminate called after throwing an instance of 'occa::exception'
-  what():
----[ Error ]--------------------------------------------------------------------
-    Message  : Unable to transform OKL kernel [...]
-    Stack
-       9 ceed::occa::CpuOperator::buildApplyAddKernel()
-       8 ceed::occa::Operator::applyAdd(...)
-       7 .../lib/libceed.so(CeedOperatorApplyAdd+0x9c)
-...
-Aborted (core dumped)
+$ ./t500_palace_style /cpu/self/ref/serial   # exit 0, no mismatch
+$ ./t500_palace_style /cpu/self/occa         # exit 0, no mismatch
+$ ./t500_palace_style /cpu/openmp/occa       # exit 0, no mismatch
 ```
 
-Same crash against `/cpu/openmp/occa`.
+Reproduced identically across 6 independent runs (3 per OCCA mode) with a
+fresh cache directory each time. **`CeedOperatorApply`/`CeedOperatorApplyAdd`
+with a Palace-style QFunction genuinely works correctly on `/cpu/self/occa`
+and `/cpu/openmp/occa`.** `tests/junit.py`'s skip rule still stands as an
+accurate description of libCEED's own *test suite* (many of those tests --
+`t4*`, `ex`, `mfem`, `petsc`, etc. -- exercise other things this document
+does not claim work, and some genuinely don't, see 7.6), but it does not mean
+"Operator+QFunction is broken on `ceed-occa`" as a blanket statement, and this
+document's earlier reading of it that way was wrong.
 
-**This is not a fluke of an ad-hoc test harness -- it's upstream's own
-documented position.** libCEED's own test runner,
-`tests/junit.py`, has an explicit pre-run skip rule:
+### 7.5 A real fix: `CeedOperatorLinearAssembleAddDiagonal` (Jacobi/Chebyshev smoothing) now works via libCEED's own fallback mechanism
 
-```python
-if contains_any(resource, ['occa']) and startswith_any(
-        test, ['t4', 't5', 'ex', 'mfem', 'nek', 'petsc', 'fluids', 'solids']):
-    return 'OCCA mode not supported'
+Palace's `Operator::AssembleDiagonal()` (`palace/fem/libceed/operator.cpp`)
+calls `CeedOperatorLinearAssembleAddDiagonal`, used by
+`palace/linalg/jacobi.cpp` and `palace/linalg/chebyshev.cpp` -- i.e. by
+Palace's Jacobi and Chebyshev smoothers, standard components of its default
+multigrid preconditioning. Before this session's fix, this aborted
+deterministically and unconditionally on `ceed-occa`:
+
+```
+backends/occa/ceed-occa-ceed-object.cpp:29 in staticCeedError():
+(OCCA) Backend does not implement LinearAssembleDiagonal
 ```
 
-`t4*` is libCEED's QFunction-level tests, `t5*` its Operator-level tests, and
-`ex`/`mfem`/`nek`/`petsc`/`fluids`/`solids` are its real downstream-application
-examples -- i.e. **every test category that exercises a full
-QFunction+Operator pipeline is explicitly excluded from OCCA in libCEED's own
-CI.** Only the vector/basis/restriction-level categories (`t1*`-`t3*`, section
-7.3's territory) run against `ceed-occa` upstream. This independently confirms
-what the crash reproduces: the Operator+QFunction path is not a supported
-configuration of `ceed-occa` today, not something this session broke or
-failed to configure correctly.
+**Root cause, found by reading `interface/ceed-preconditioning.c`'s
+dispatcher, not guessed:**
 
-**Plausible mechanism (labeled as hypothesis, not a fix):**
-`backends/occa/ceed-occa-qfunction.cpp`'s `QFunction::getKernelProps()`
-builds the `occa::properties` used to compile a user QFunction's kernel. It
-sets `defines/CeedInt`, `defines/CeedScalar`, `defines/CeedPragmaSIMD`, and
-injects `#include "<absolute path to the qfunction header>"` as literal
-kernel source -- but never adds an include *search path* (OCCA's own
-mechanism for this is `props["okl/include_paths"]` or the `OCCA_INCLUDE_PATH`
-environment variable, per
-`~/dev/occa-ref/src/occa/internal/lang/preprocessor.cpp`). A `grep -rn
-"includes\|compiler_flags\|-I" backends/occa/*.cpp` across the whole backend
-turns up nothing. So when a QFunction header pulls in a real system-style
-header via `#include <...>` -- `tests/t500-operator.h` does exactly this for
-`<ceed/types.h>` -- OCCA's own kernel-source parser has nowhere configured to
-look for it. This is offered as the likely *mechanism*, not a verified fix:
-ad hoc attempts in this session to work around it (setting
-`OCCA_INCLUDE_PATH`, registering an extra `CeedAddJitSourceRoot`) gave
-inconsistent results across repeated runs, almost certainly due to OCCA's own
-kernel-hash build cache (`~/.occa/cache/`) interacting badly with a
-hand-rolled test harness outside libCEED's real test driver. Given the
-`tests/junit.py` skip list already says plainly that this category isn't
-supported, chasing a source patch for an upstream-acknowledged gap was not a
-good use of further time in this session -- see "Not attempted" below.
+```c
+if (op->LinearAssembleAddDiagonal) {
+  CeedCall(op->LinearAssembleAddDiagonal(op, assembled, request));  // backend version
+} else if (is_composite) { ... }
+else {
+  CeedOperator op_fallback;
+  CeedCall(CeedOperatorGetFallback(op, &op_fallback));
+  if (op_fallback) { CeedCall(CeedOperatorLinearAssembleAddDiagonal(op_fallback, ...)); return ...; }
+}
+// Default interface implementation
+CeedCall(CeedOperatorLinearAssembleAddDiagonalSingle(op, request, false, assembled));
+```
 
-**Does this transfer to Palace's own QFunctions specifically?** Checked
-directly rather than assumed: `grep -rn "#include <" palace/fem/qfunctions/`
-shows Palace's QFunction headers include exactly one angle-bracket system
-header, `<math.h>` (in the `utils_*_qf.h` helpers) -- not `<ceed/types.h>` or
-`<ceed.h>` directly, unlike libCEED's own `t500-operator.h`. `<math.h>` is a
-standard header OCCA's underlying toolchain resolves by default, so Palace's
-specific QFunctions likely would not reproduce this *exact* symptom
-verbatim. That doesn't rescue the OCCA-Operator path, though: `tests/junit.py`'s
-skip rule is architectural (any Operator+QFunction usage), not
-header-content-specific, and Palace's `BilinearForm`/`operator.cpp` is
-precisely that architecture (see 7.5). The honest statement is "the specific
-crash reproduced here may not be bit-for-bit what Palace would hit," not
-"Palace would be fine."
+libCEED has a real, designed-for-this fallback mechanism -- `CeedOperator`s
+can delegate operations they don't implement to a fallback `Ceed` context,
+exactly what `backends/cuda-gen`/`backends/hip-gen` already do
+(`CeedSetOperatorFallbackCeed(ceed, ceed_ref)` in
+`backends/cuda-gen/ceed-cuda-gen.c`) for their own unimplemented operations.
+But this dispatcher only reaches the fallback branch when
+`op->LinearAssembleAddDiagonal` is null. `ceed-occa`'s
+`Operator::ceedCreate()` registered a **non-null** function pointer that
+always calls `staticCeedError(...)` -- so the top branch always fired, and
+the fallback (which `ceed-occa` never registered anyway) was never reachable.
 
-### 7.5 What this means for Palace, concretely
+**The fix** (`extern/patch/libceed/patch_occa_operator_fallback.diff`,
+applied via a new `PATCH_COMMAND` in `cmake/ExternalLibCEED.cmake`, gated on
+`PALACE_WITH_OCCA`, mirroring `ExternalMFEM.cmake`'s mechanism): two small
+changes to `backends/occa/ceed-occa-operator.cpp` and
+`backends/occa/ceed-occa.cpp`:
 
-Palace's `palace::BilinearForm` (`palace/fem/bilinearform.hpp`,
-`palace/fem/libceed/operator.cpp`) calls `CeedOperatorApplyAdd` with custom
-QFunctions for its actual electromagnetics assembly
-(`palace/fem/libceed/operator.cpp:170-176`, e.g. `CeedVectorSetArray(u[id],
-mem, CEED_USE_POINTER, ...)` then `CeedOperatorApplyAdd(op[id], u[id], v[id],
-...)`) -- exactly the category `tests/junit.py` marks unsupported for OCCA and
-that crashed in 7.4's reproduction. Combined with section 1's finding that
-Palace never goes through `mfem::BilinearForm` at all, there are now two
-independent routes for OCCA to reach Palace's real assembly, and **both are
-closed today**:
+1. Stop registering `LinearAssembleQFunction`/`LinearAssembleQFunctionUpdate`/
+   `LinearAssembleAddDiagonal`/`LinearAssembleAddPointBlockDiagonal`/
+   `CreateFDMElementInverse` as hard-failing stubs (leave the pointers null).
+2. In `initCeed()`, register a reference-backend fallback Ceed
+   (`/cpu/self/ref/serial`, or `/gpu/cuda/ref`/`/gpu/hip/ref` for those
+   modes) via `CeedSetOperatorFallbackCeed`, the same call cuda-gen/hip-gen
+   already use.
+
+**Verified-here**, via the *actual* `ExternalProject_Add`/`PATCH_COMMAND`
+path (not a hand-edited build tree -- the patch was generated against a
+fresh clone at the pinned `95bd1e908b...` commit, confirmed with
+`git apply --check` against that clean checkout, then the whole
+`libCEED` target was deleted and rebuilt from scratch through Palace's
+CMake so the verification below exercises the same mechanism the Mac-side
+agent will use):
+
+```
+$ ./t500_palace_style /cpu/self/ref/serial
+CeedOperatorLinearAssembleAddDiagonal ierr=0
+diag: sum=2.040000000000 sumsq=0.082059088502 first=0.003395390927 last=0.010204609073 n=61
+
+$ ./t500_palace_style /cpu/self/occa
+CeedOperatorLinearAssembleAddDiagonal ierr=0
+diag: sum=2.040000000000 sumsq=0.082059088502 first=0.003395390927 last=0.010204609073 n=61
+
+$ ./t500_palace_style /cpu/openmp/occa
+CeedOperatorLinearAssembleAddDiagonal ierr=0
+diag: sum=2.040000000000 sumsq=0.082059088502 first=0.003395390927 last=0.010204609073 n=61
+```
+
+Bit-identical across all three. The qfunction's `rho` coefficient was
+deliberately made non-trivial and varying per quadrature point
+(`rho[i] = weight[i] * dxdX[i] * (1.0 + 0.37 * i)`, so `first != last`) before
+running this comparison -- a uniform/trivial coefficient could make a wrong,
+degenerate implementation (e.g. one that accidentally aliases host pointers
+across backends) look right by coincidence. It didn't happen here: the
+diagonal is genuinely non-uniform and still matches exactly.
+
+### 7.6 Not fixed: full sparse-matrix assembly still segfaults, and Palace's default AMS/AMG solve path needs exactly that
+
+Palace's `CeedOperatorAssembleCOO` (`palace/fem/libceed/operator.cpp`) calls
+`CeedOperatorLinearAssembleSymbolic` then `CeedOperatorLinearAssemble` --
+full sparse (COO) matrix assembly, not just the diagonal. Unlike
+`LinearAssembleAddDiagonal`, `ceed-occa` never registered stubs for these two
+(they were already null), so the section 7.5 fix does make them reach the
+fallback branch -- but doing so **segfaults**, with a real backtrace, not a
+clean error:
+
+```
+$ ./t500_palace_style /cpu/self/occa   # (with LinearAssembleSymbolic added)
+CeedOperatorLinearAssembleAddDiagonal ierr=0
+diag: ...
+Segmentation fault (core dumped)
+```
+
+```
+$ gdb -batch -ex run -ex bt --args ./t500_palace_style /cpu/self/occa
+Program received signal SIGSEGV, Segmentation fault.
+0x... in occa::modeMemory_t::addMemoryRef(occa::memory*) () from libocca.so
+#0  occa::modeMemory_t::addMemoryRef(occa::memory*) ()
+#1  ceed::occa::Vector::getKernelArg() ()
+#2  ceed::occa::ElemRestriction::apply(CeedTransposeMode, ...) ()
+#3  CeedElemRestrictionApply ()
+#4  CeedOperatorAssembleSymbolicSingle ()
+#5  CeedOperatorLinearAssembleSymbolic ()   # <- fallback op, on the fallback (ref) Ceed
+#6  CeedOperatorLinearAssembleSymbolic ()   # <- original call, on the occa op
+#7  main ()
+```
+
+**Root cause:** frame 6 is the fallback dispatch (mirrors section 7.5's
+pattern, this time reaching `CeedOperatorGetFallback` because `ceed-occa`
+never registered these two in the first place). Frame 5 is the *generic*
+implementation running against the fallback (`ref`) `CeedOperator` -- but
+frame 2 is `ceed::occa::ElemRestriction::apply()`, `ceed-occa`'s *own*
+C++ class, not the ref backend's. **`CeedOperatorGetFallback` does not fully
+reparent a `CeedElemRestriction` onto the fallback `Ceed`** -- the generic
+assembly algorithm ends up calling `ceed-occa`'s restriction-apply against a
+`CeedVector` that was allocated on the fallback (host-memory, no OCCA backing)
+Ceed, and `ceed::occa::Vector::getKernelArg()` dereferences an OCCA memory
+handle that was never actually created for that vector. This is why
+`backends/cuda-gen`/`backends/hip-gen` never hit this: their fallback
+(`/gpu/cuda/ref`, `/gpu/hip/ref`) shares the same device memory space as the
+main backend, so a "mixed" object graph happens to still work; `ceed-occa`'s
+fallback (`/cpu/self/ref/serial`) does not share OCCA's own memory
+abstraction at all.
+
+**Not fixed here, deliberately.** This is a cross-backend object-lifecycle
+bug inside libCEED's own fallback-operator construction
+(`CeedOperatorGetFallback` and whatever builds its cloned field list), not a
+`ceed-occa`-local registration issue like 7.5's. Fixing it correctly would
+mean understanding and changing how libCEED reparents `CeedElemRestriction`/
+`CeedBasis` objects onto a fallback `Ceed` for *every* backend that might use
+a fallback with a different memory model, not just `ceed-occa` -- real
+upstream libCEED surgery, not a scoped, verifiable-on-this-VM patch, and
+exactly the kind of change that risks producing wrong numbers silently if
+rushed. Documented here with a full backtrace so the next agent (or an
+upstream libCEED issue) doesn't have to re-derive it.
+
+**Consequence: this is not a niche gap.** `palace/linalg/solver.cpp` calls
+`ParOperator::ParallelAssemble()`/`StealParallelAssemble()` to get a real
+assembled `HypreParMatrix` for essentially every preconditioner setup, and
+`ParOperator::ParallelAssemble()` (`palace/linalg/rap.cpp`) calls
+`BilinearForm::FullAssemble()` -> `CeedOperatorAssembleCOO()` whenever the
+underlying operator is `ceed::Operator`-backed rather than an already-assembled
+matrix. `palace/linalg/ams.cpp`'s `HypreAmsSolver` -- Palace's standard
+Maxwell/curl-curl preconditioner -- explicitly requires a real
+`HypreParMatrix` (`MFEM_VERIFY(A, "HypreAmsSolver requires a HypreParMatrix
+operator!")`). **Any default, AMS/AMG-preconditioned Palace solve will reach
+this segfault** when its operators are libCEED-backed and libCEED is running
+on `ceed-occa`, regardless of the section 7.5 fix. The diagonal fix is real
+and matters (some solver configurations only need the diagonal, e.g. plain
+Jacobi/Chebyshev smoothing without an AMS/AMG coarse level), but it does not
+add up to "Palace runs end to end on `ceed-occa`" for Palace's actual default
+configuration.
+
+### 7.7 What this means for Palace, concretely
+
+Two independent routes were identified for OCCA to reach Palace's real
+assembly (section 1):
 
 1. Via `mfem::BilinearForm` (MFEM's own OCCA-dispatching partial assembly) --
-   closed because Palace doesn't use that class (section 1).
-2. Via `ceed-occa` (libCEED's own OCCA backend, wired up in this section) --
-   closed because the Operator+QFunction path it would need is not a
-   supported configuration of that backend (this section).
+   closed, because Palace doesn't use that class at all (section 1).
+2. Via `ceed-occa` (libCEED's own OCCA backend) -- **partially open** after
+   this session's fix: `CeedOperatorApply`/`CeedOperatorApplyAdd` (matrix-free
+   operator action) and `CeedOperatorLinearAssembleAddDiagonal`
+   (Jacobi/Chebyshev smoothing) are verified working; full sparse-matrix
+   assembly (needed by Palace's default AMS/AMG preconditioning) segfaults on
+   a separate, deeper, not-fixed-here libCEED bug (7.6).
 
-So: this section's build wiring is real (7.2), and the basis/vector-level
-primitives genuinely compute correctly through it (7.3) -- but none of that
-is on any code path Palace's own operators actually call. **The correct,
-undiluted statement of where things stand is that Palace still gains zero
-functional benefit from any of the OCCA wiring in this document, including
-this section's libCEED work.** It is one increment closer to the truth than
-section 1's original framing, which left the door open to "libCEED growing a
-Metal backend" as if that were the only piece missing; this section shows the
-CPU/OpenMP door on libCEED's *existing* OCCA backend is already closed for a
-different, more immediate reason.
+So: **route 2 is real, not zero, but is not "Palace works on `ceed-occa`"
+either.** A Palace configuration that never needs `ParallelAssemble()` (a
+matrix-free solve using only Jacobi/Chebyshev-smoothed iterations, if Palace
+has such a configuration -- not verified here, would need checking against
+Palace's actual solver-selection code and config options) could plausibly run
+end to end today. Palace's default, AMS/AMG-preconditioned electromagnetics
+solves cannot, until either the 7.6 libCEED bug is fixed upstream or Palace's
+own solver setup avoids `ParallelAssemble()` for `ceed::Operator`-backed
+operators on `ceed-occa` specifically (not attempted here -- a Palace-side
+architectural decision, not a build-wiring one).
 
-### 7.6 Not attempted, and why
+### 7.8 Remaining gaps, not attempted
 
-- **A source patch to `ceed-occa` to add an OCCA include-search-path
-  property.** Even if this fixed the exact `<ceed/types.h>` symptom (not
-  confirmed -- see 7.4), `tests/junit.py`'s skip list is the stronger signal
-  that Operator+QFunction support on OCCA is an upstream-acknowledged gap, not
-  a one-line oversight. A real fix belongs upstream, would need libCEED's
-  actual maintainers or a proper fork+patch workflow (Palace has no such
-  mechanism for libCEED today -- unlike MFEM's `extern/patch/mfem/*.diff`,
-  there is no `LIBCEED_PATCH_FILES` in `cmake/ExternalLibCEED.cmake`), and
-  should be scoped and tested against libCEED's own CI expectations, not
-  guessed at from one VM.
+- **Fixing the section 7.6 fallback-reparenting bug in libCEED itself.**
+  Real upstream surgery in `CeedOperatorGetFallback`'s object-cloning logic,
+  affecting every backend that might register a cross-memory-model fallback,
+  not scoped to `ceed-occa`. Left as a documented, reproducible bug (7.6's
+  backtrace) rather than attempted blind.
+- **`CeedElemRestrictionCreateAtPoints`** (a different, unrelated `ceed-occa`
+  gap found while surveying `t5*` tests broadly: `"Backend does not implement
+  CeedElemRestrictionCreateAtPoints"`). **Not relevant to Palace** -- checked
+  directly, `grep -rn "AtPoints" palace/fem/libceed/*.cpp` returns nothing;
+  Palace never calls it.
 - **CUDA/HIP `ceed-occa` resources.** No CUDA/HIP toolchain on this VM;
-  `occa modes` here only ever reports `Serial`/`OpenMP`.
+  `occa modes` here only ever reports `Serial`/`OpenMP`. The section 7.5 fix's
+  `/gpu/cuda/ref`/`/gpu/hip/ref` fallback selection is untested (code
+  reviewed, not run) for the same reason.
 
 ## 8. Metal specifically: two independent blockers, not one
 
 The task framing going in was "get to OCCA, then get to Metal, patching MFEM
 as needed." Section 7 already shows the MFEM side isn't where the remaining
 work is -- MFEM's own `occa-metal` skeleton (the companion MFEM-side doc)
-rejects cleanly on non-Apple platforms exactly as designed, and section 7's
-blocker sits entirely inside libCEED. This section adds a second,
-independent libCEED-side blocker specific to Metal, and states plainly: no
-patch to MFEM gets Palace to a working Metal backend. Both real blockers are
-in libCEED.
+rejects cleanly on non-Apple platforms exactly as designed, and both real
+remaining blockers found in this session sit entirely inside libCEED, not
+MFEM. Section 8.1 restates where things actually stand after section 7's
+fixes (better than originally thought, but still blocked for a real-assembly
+Palace solve); 8.2 is a second, independent, Metal-specific blocker on top of
+that. No patch to MFEM reaches either one.
 
-### 8.1 Blocker 1 (inherited from section 7): the Operator path doesn't work on any `ceed-occa` mode, Metal included
+### 8.1 Blocker 1, corrected: not "the Operator path doesn't work," but "full-assembly doesn't work, and Metal inherits that too"
 
-Section 7.4's finding is mode-agnostic -- the missing include-path mechanism
-and the `tests/junit.py` skip rule apply to `ceed-occa` as a whole, not
-specifically to Serial/OpenMP. There is no reason to expect a hypothetical
-`/gpu/metal/occa` resource would behave differently; if anything, GPU modes
-in `ceed-occa` are described in the source as *more* experimental than CPU
-modes (see 8.3). Getting a real electromagnetics operator to run via
-`ceed-occa` on any mode -- CPU, OpenMP, or an eventual Metal -- requires
-fixing this first, and it is an upstream libCEED problem, not something
-Palace's build wiring or an MFEM patch can route around.
+An earlier pass of this section claimed the `ceed-occa` Operator+QFunction
+path was categorically broken on every mode, Metal included, and that this
+alone blocked Metal. Section 7.4 corrects the "categorically broken" part:
+`CeedOperatorApply`/`CeedOperatorApplyAdd` and diagonal assembly
+(`CeedOperatorLinearAssembleAddDiagonal`) both work correctly, verified with
+real numerics, after this session's fix (7.5). What's actually still broken,
+mode-agnostically, is the section 7.6 bug: full sparse-matrix assembly
+(`CeedOperatorLinearAssembleSymbolic`/`CeedOperatorLinearAssemble`) segfaults
+via a cross-backend fallback-reparenting bug in libCEED's
+`CeedOperatorGetFallback`. That bug is not specific to Serial/OpenMP -- it is
+in how libCEED constructs a fallback operator's `CeedElemRestriction`
+objects, which would apply identically to a hypothetical `/gpu/metal/occa`
+resource. So: **getting a real electromagnetics operator all the way through
+Palace's default AMS/AMG-preconditioned solve via `ceed-occa` -- on any mode,
+CPU, OpenMP, or an eventual Metal -- still requires fixing the section 7.6
+bug first, and that is an upstream libCEED problem**, not something Palace's
+build wiring or an MFEM patch can route around. (`CeedOperatorApplyAdd`-only,
+non-AMS/AMG configurations, if Palace has any, are not blocked by this --
+see 7.7.)
 
 ### 8.2 Blocker 2: Metal was never wired into `ceed-occa`'s resource parser, and there's a real reason why
 
@@ -698,10 +884,29 @@ enters the picture. Worth knowing going in, not just for the Metal case.
 ### 8.4 Bottom line for the next agent
 
 **Don't patch MFEM to chase Metal.** Nothing found in this session points at
-MFEM. Both real blockers are in libCEED: the Operator+QFunction path doesn't
-work on `ceed-occa` at all today (section 7.4), and `CeedScalar` is
-hardcoded double with no Metal registration in the resource parser (section
-8.2). If Metal-via-libCEED is still the goal, the actual next steps are
-upstream libCEED work -- fix or scope the Operator-path gap, then design a
-real precision story -- not anything reachable from Palace's or MFEM's build
-systems alone.
+MFEM, and this remains true after the deeper second pass. Real progress was
+made and is committed: `CeedOperatorApply`/`CeedOperatorApplyAdd` and
+Jacobi/Chebyshev diagonal assembly are genuinely fixed and verified working
+on `ceed-occa`'s CPU/OpenMP modes (section 7.5). But two real blockers remain
+between here and an actual working `occa-metal` build of Palace, and **both
+are in libCEED, not MFEM**:
+
+1. Full sparse-matrix assembly (`CeedOperatorLinearAssembleSymbolic`/
+   `CeedOperatorLinearAssemble`) segfaults via a cross-backend
+   fallback-reparenting bug in `CeedOperatorGetFallback` (section 7.6) --
+   and Palace's default AMS/AMG-preconditioned solves need exactly this, via
+   `ParOperator::ParallelAssemble()`. This blocks any mode of `ceed-occa`,
+   not just Metal.
+2. `CeedScalar` is hardcoded to `double` with no Metal registration in
+   `ceed-occa`'s resource parser at all (section 8.2), and Palace's
+   zero-copy `mfem::real_t`<->`CeedScalar` aliasing (`CEED_USE_POINTER` in
+   `palace/fem/libceed/operator.cpp`) means this is a whole-stack precision
+   decision, not a local one.
+
+If Metal-via-libCEED is still the goal, the actual next steps are upstream
+libCEED work -- fix the fallback-reparenting bug (or find/report it as a
+libCEED issue), then separately design a real precision story for Metal --
+not anything reachable from Palace's or MFEM's build systems alone. The
+`ceed-occa` build wiring and the diagonal-assembly fix in this branch are a
+real, durable improvement to build on, not a dead end, but they don't close
+either remaining gap.
