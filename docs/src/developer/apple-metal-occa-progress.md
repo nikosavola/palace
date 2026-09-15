@@ -33,11 +33,15 @@ explaining why, rather than attempting to run.
 blocker directly** -- and found something more consequential: libCEED can
 genuinely be built `float`-only (verified), and MFEM+HYPRE genuinely
 interoperate correctly in single precision (verified with a real
-AMG-preconditioned solve), but **Palace's own source code does not compile
-under single precision at all** -- `palace/linalg/hypre.cpp` casts
-`mfem::real_t*` to `double*` in three places, which is a hard type error
-under `MFEM_USE_SINGLE`, and this is one instance of roughly 1243 hardcoded
-`double` occurrences across Palace's own numerical code. This, not
+AMG-preconditioned solve, including a true-residual check that rules out
+silent double-precision fallback). But **Palace's own source code does not
+compile under single precision at all**: `palace/linalg/hypre.cpp` casts
+`mfem::real_t*` to `double*` in three places (a hard type error under
+`MFEM_USE_SINGLE`), and `palace/linalg/petsc.hpp` independently refuses
+single precision outright for the SLEPc eigenvalue path Palace enables by
+default. These two confirmed blockers sit inside a much larger pattern --
+on the order of 1200 more hardcoded-`double` call sites across Palace's
+own numerical code that would each need individual review. This, not
 anything TPL-side, is what actually stands between this branch and a
 working Metal path today -- see section 9 for the full evidence and scope.
 
@@ -1353,23 +1357,44 @@ double: PRECISION_CHECK ||x||_2 = 5.0028238455e+01  sizeof(real_t) = 8
 single: PRECISION_CHECK ||x||_2 = 5.0026911553e+01  sizeof(real_t) = 4
 ```
 
-Relative difference: ~2.65e-5 -- consistent with expected float32 precision
-loss for a converged PDE solve, not a sign of a broken or silently-still-
-double computation (both `sizeof(real_t)` values and the installed
-`HYPRE_config.h`'s `typedef float HYPRE_Real` were checked directly, not
-inferred). Both runs used `CGSolver` with `HypreBoomerAMG`, converged in 21
-iterations with an near-identical reduction factor (0.2577 vs 0.257678);
-the per-iteration residual values differ increasingly from double's as
-iterations progress (expected -- single- and double-precision BoomerAMG
-setup produce non-identical, but both effective, AMG hierarchies from the
-same matrix, since coarsening/interpolation involve floating-point
-threshold comparisons that need not agree bit-for-bit across precisions).
+Relative difference in the solution norm: ~2.65e-5. Both runs used
+`CGSolver` with `HypreBoomerAMG`, converged in 21 iterations with a
+near-identical reduction factor (0.2577 vs 0.257678); the per-iteration
+*tracked* residual (CG's own recursively-updated `(B r, r)`, printed by
+MFEM's `IterativeSolver`) descended to a similar order of magnitude in
+both runs (~5.3e-26) -- which on its own would be surprising for a genuine
+float32 computation (float32's relative resolution is ~1.19e-7, so a
+residual continuing to shrink 19 orders of magnitude past that looks like
+it could mean something is silently still running in double).
+
+**This was checked, not waved away.** CG's internally-tracked residual is
+known to diverge from the *true* residual (`B - A*X`, recomputed from
+scratch) as iteration count grows, in either precision -- so the tracked
+value alone doesn't prove or disprove anything. Recomputed the true
+residual explicitly after both solves:
+
+```
+double: ||B-AX||_2 = 2.3966422761e-13  (relative to ||B||: 1.4481750497e-11)
+single: ||B-AX||_2 = 1.5420282217e-05  (relative to ||B||: 9.3177299366e-04)
+```
+
+This is the discriminating result. The double run's true residual sits at
+double-precision machine-epsilon scale (~1e-13), and the single run's sits
+at float-precision machine-epsilon scale (~1e-5 to 1e-3 relative) --
+exactly the roughly-five-orders-of-magnitude gap expected between `float`
+(~1.19e-7 relative epsilon) and `double` (~2.2e-16 relative epsilon)
+arithmetic. If single precision were silently promoting to double
+somewhere, this residual would also sit near 1e-13; it doesn't. Both
+`sizeof(real_t)` values and the installed `HYPRE_config.h`'s `typedef
+float HYPRE_Real` were also checked directly, not inferred.
 
 **This is a real, positive result at the TPL level: MFEM and HYPRE, built
 consistently in single precision, solve a real AMG-preconditioned linear
-system correctly.** This is exactly the TPL-level foundation the earlier
-"whole-stack precision decision" language in section 8.2 was gesturing at
--- and it holds up under an actual test, not just a claim.
+system correctly, genuinely in single precision.** This is exactly the
+TPL-level foundation the earlier "whole-stack precision decision" language
+in section 8.2 was gesturing at -- and it holds up under an actual test
+designed to catch the specific way this kind of check can fool itself, not
+just a claim.
 
 ### 9.3 The actual blocker: Palace's own source code hardcodes `double`, independent of any TPL
 
@@ -1392,18 +1417,33 @@ error the moment `MFEM_USE_SINGLE` is defined. Palace's own code blocks
 single precision before HYPRE's or libCEED's precision assumptions are
 even reached.
 
-This is not an isolated site. `palace/linalg/petsc.hpp:13` has its own,
-independent hardcoded-double assumption -- a deliberate compile-time guard,
-not a bug: `#error "PETSc should be compiled with double precision!"`.
-And more broadly, as a scale indicator (not a precise defect count --
-many of these are legitimate, e.g. `std::numeric_limits<double>::epsilon()`
-used as a fixed tolerance, or genuinely double-precision-only external
-data): `grep -rn "\bdouble\b" palace/linalg/ palace/fem/ palace/models/
-palace/drivers/ palace/utils/` (excluding `mfem::real_t`, comments, and
-`std::complex<double>`) returns **1243 matches across 60+ files**. Getting
-Palace itself to build and run correctly under `MFEM_USE_SINGLE` is a
-source-code precision-audit project touching most of `palace/linalg/` and
-parts of `palace/fem/`, `palace/models/`, and `palace/drivers/` -- not a
+This is not an isolated site, and it is not the only *independent* blocker
+either. `palace/linalg/petsc.hpp:13` has its own, separate hardcoded-double
+assumption -- a deliberate compile-time guard, not a bug:
+`#error "PETSc should be compiled with double precision!"`. This matters
+concretely, not just as a style note: **`PALACE_WITH_SLEPC` is `ON` by
+default** (`CMakeLists.txt`), so a default Palace build already commits to
+a PETSc/SLEPc path that explicitly refuses single precision. Getting
+Palace single-precision-capable therefore means either disabling SLEPc or
+separately porting/wiring a single-precision PETSc build (PETSc does
+support one; Palace's `ExternalSLEPc.cmake` does not wire it, and this
+document makes no claim about whether that path would work) -- a second,
+independent piece of scope beyond the `hypre.cpp` casts.
+
+As a rough scale indicator for the rest -- explicitly an upper bound on
+sites to review, not a defect count, since many hits are legitimate
+(`std::numeric_limits<double>::epsilon()` as a fixed tolerance,
+`std::complex<double>` where that's genuinely the right type, external
+data that really is double-only) -- `grep -rn "\bdouble\b" palace/linalg/
+palace/fem/ palace/models/ palace/drivers/ palace/utils/` (excluding
+`mfem::real_t` and comments) returns on the order of 1200 matches across
+60+ files. The honest summary: three confirmed hard-error sites
+(`hypre.cpp`), one confirmed second independent blocker (`petsc.hpp`/
+SLEPc), and roughly 1200 more call sites that would each need individual
+review to know whether they're a real problem. Getting Palace itself to
+build and run correctly under `MFEM_USE_SINGLE` is a source-code
+precision-audit project touching most of `palace/linalg/` and parts of
+`palace/fem/`, `palace/models/`, and `palace/drivers/` -- not a
 build-system toggle, and meaningfully larger than anything else attempted
 on this branch.
 
@@ -1414,12 +1454,7 @@ sufficient -- `hypre_VectorData`/`hypre_CSRMatrixData` are raw
 `HYPRE_Real*` in HYPRE's own headers, so the fix additionally requires
 `HYPRE_Real` and `mfem::real_t` to match (i.e., Palace's HYPRE build would
 also need `HYPRE_ENABLE_SINGLE=ON` whenever `MFEM_USE_SINGLE` is set,
-exactly as section 9.2 verified in isolation). The `petsc.hpp` site is a
-statement that Palace's SLEPc/PETSc eigenvalue solver path has not been
-audited for single precision at all and would need its own investigation
-(PETSc supports a single-precision build, but Palace's `ExternalSLEPc.cmake`
-does not wire it, and this document makes no claim about whether that path
-would work).
+exactly as section 9.2 verified in isolation).
 
 ### 9.4 Corroborating research: is the Metal double-precision constraint even real?
 
@@ -1469,16 +1504,22 @@ overclaims what was actually verified.** What's true, precisely:
   verified with a real computation. Not yet wired into any Palace option
   (there's nothing for it to plug into yet).
 - MFEM and HYPRE, built consistently in single precision, correctly solve
-  a real AMG-preconditioned linear system (~2.65e-5 relative agreement
-  with double, on MFEM's own `ex1p`). This is the TPL-level result the
-  earlier "whole-stack precision decision" language was gesturing at, now
-  actually demonstrated rather than just asserted.
-- **Palace itself does not compile under `MFEM_USE_SINGLE` today.**
-  `palace/linalg/hypre.cpp:28,34,57`'s `const_cast<double *>` sites are a
-  hard compile error, not a slow path, and they're one instance of a
-  much broader pattern (~1243 hardcoded `double` occurrences across
-  `palace/linalg/`, `palace/fem/`, `palace/models/`, `palace/drivers/`,
-  `palace/utils/`). This -- not any TPL, not `ceed-occa`, not libCEED's
+  a real AMG-preconditioned linear system, genuinely in single precision
+  throughout -- confirmed via a true (recomputed-from-scratch) residual
+  check, not just solution-norm agreement (which alone wouldn't have ruled
+  out a silent double-precision fallback). This is the TPL-level result
+  the earlier "whole-stack precision decision" language was gesturing at,
+  now actually demonstrated rather than just asserted.
+- **Palace itself does not compile under `MFEM_USE_SINGLE` today, and for
+  two independent reasons.** `palace/linalg/hypre.cpp:28,34,57`'s
+  `const_cast<double *>` sites are a hard compile error, not a slow path.
+  Separately, `palace/linalg/petsc.hpp:13` refuses single precision
+  outright for the SLEPc eigenvalue path, which `PALACE_WITH_SLEPC=ON`
+  enables by default. Both sit inside a much larger pattern -- on the
+  order of 1200 more hardcoded-`double` call sites across `palace/linalg/`,
+  `palace/fem/`, `palace/models/`, `palace/drivers/`, `palace/utils/`,
+  most unreviewed (many are almost certainly benign, e.g. fixed
+  tolerances). This -- not any TPL, not `ceed-occa`, not libCEED's
   restriction support (section 7) -- is what actually stands between this
   branch and a working Metal path today.
 - The Metal double-precision constraint itself is confirmed real from
@@ -1491,10 +1532,12 @@ overclaims what was actually verified.** What's true, precisely:
 build and run correctly under `MFEM_USE_SINGLE`" as its own, separately
 scoped project -- start from `palace/linalg/hypre.cpp`'s three sites (the
 smallest, most concrete starting point, and the one that would immediately
-unblock testing further), then work outward through `palace/linalg/vector.cpp`
-and the other `palace/linalg/` files the grep in section 9.3 surfaces. Do
-not attempt this as a quick follow-on to the OCCA/libCEED work in section
-7 -- it's a materially different, larger kind of change (auditing existing
-numerical code for a type assumption, not adding a new backend capability),
-and deserves its own review and its own commits, not to be bundled with
-anything else on this branch.
+unblock testing further with `PALACE_WITH_SLEPC=OFF`), then decide
+separately whether to disable SLEPc for a single-precision build or take
+on porting/wiring a single-precision PETSc, before working outward through
+`palace/linalg/vector.cpp` and the other `palace/linalg/` files the grep in
+section 9.3 surfaces. Do not attempt this as a quick follow-on to the
+OCCA/libCEED work in section 7 -- it's a materially different, larger kind
+of change (auditing existing numerical code for a type assumption, not
+adding a new backend capability), and deserves its own review and its own
+commits, not to be bundled with anything else on this branch.
