@@ -441,10 +441,51 @@ index 057a1311..fd9e75a7 100644
    return CEED_ERROR_SUCCESS;
  }
 diff --git a/backends/occa/ceed-occa.cpp b/backends/occa/ceed-occa.cpp
-index eca2f4e7..a5d0bdd2 100644
+index eca2f4e7..d5a15ff8 100644
 --- a/backends/occa/ceed-occa.cpp
 +++ b/backends/occa/ceed-occa.cpp
-@@ -254,6 +254,27 @@ static int initCeed(const char *c_resource, Ceed ceed) {
+@@ -144,6 +144,14 @@ static int splitCeedResource(const std::string &resource, std::string &match, St
+     match = "opencl";
+     return CEED_ERROR_SUCCESS;
+   }
++  // Special-cased like the others above so this reaches initCeed()'s
++  // Metal-specific error message (not usable -- see initCeed() and
++  // docs/src/developer/apple-metal-occa-progress.md in the Palace repo)
++  // instead of the generic "resourceVector.size() != 2" rejection below.
++  if (resource == "/gpu/metal/occa") {
++    match = "metal";
++    return CEED_ERROR_SUCCESS;
++  }
+   if (resource == "/cpu/openmp/occa") {
+     match = "openmp";
+     return CEED_ERROR_SUCCESS;
+@@ -231,6 +239,25 @@ static int initCeed(const char *c_resource, Ceed ceed) {
+     return CeedError(ceed, CEED_ERROR_BACKEND, "(OCCA) Backend cannot use resource: %s", c_resource);
+   }
+ 
++  // Metal is deliberately not wired into getDeviceMode() below (it's simply
++  // absent from that function's cases, not gated off there) -- give a
++  // specific, actionable error here instead of falling through to the
++  // generic "cannot use resource" message getDeviceMode's failure produces.
++  // See docs/src/developer/apple-metal-occa-progress.md (Palace repo,
++  // section 8.2) for the full writeup: CeedScalar is hardcoded to double
++  // (include/ceed/types.h), and Metal's double-precision support on Apple
++  // GPUs is poor to absent, so this needs a whole-stack precision decision
++  // (libCEED and MFEM moving to single precision together), not a local
++  // patch to ceed-occa alone.
++  if (match == "metal") {
++    return CeedError(ceed, CEED_ERROR_BACKEND,
++                      "(OCCA) Metal is not supported by this backend: CeedScalar is hardcoded to "
++                      "double precision, and Metal's double-precision support on Apple GPUs is "
++                      "poor to absent. This requires a whole-stack precision decision (libCEED "
++                      "and MFEM both moving to single precision together), not a local patch -- "
++                      "see docs/src/developer/apple-metal-occa-progress.md in the Palace repo.");
++  }
++
+   std::string mode;
+   ierr = getDeviceMode(match, mode);
+   if (ierr) {
+@@ -254,6 +281,27 @@ static int initCeed(const char *c_resource, Ceed ceed) {
    ceed::occa::Context *context = new Context(::occa::device(deviceProps));
    CeedCallBackend(CeedSetData(ceed, context));
  
@@ -472,3 +513,16 @@ index eca2f4e7..a5d0bdd2 100644
    return CEED_ERROR_SUCCESS;
  }
  
+@@ -325,5 +373,12 @@ CEED_INTERN int CeedRegister_Occa(void) {
+   CeedCallBackend(CeedRegister("/gpu/opencl/occa", ceed::occa::registerBackend, 230));
+   CeedCallBackend(CeedRegister("/gpu/hip/occa", ceed::occa::registerBackend, 220));
+   CeedCallBackend(CeedRegister("/gpu/cuda/occa", ceed::occa::registerBackend, 210));
++  // Registered (unlike the modes above) purely so CeedInit's own top-level
++  // backend-matching step actually dispatches "/gpu/metal/occa" to this
++  // backend's initCeed(), which then gives a specific, actionable error
++  // (see initCeed() above) instead of libCEED's generic "No suitable
++  // backend" -- Metal itself is not usable via ceed-occa; see
++  // docs/src/developer/apple-metal-occa-progress.md in the Palace repo.
++  CeedCallBackend(CeedRegister("/gpu/metal/occa", ceed::occa::registerBackend, 200));
+   return CEED_ERROR_SUCCESS;
+ }

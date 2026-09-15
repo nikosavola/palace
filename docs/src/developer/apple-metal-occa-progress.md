@@ -21,12 +21,17 @@ sparse-matrix assembly, needed by Palace's default AMS/AMG solves), and
 (including Palace's default 3D H(curl)/Nedelec element spaces) are all
 verified working correctly on `/cpu/self/occa` and `/cpu/openmp/occa`,
 including on a composite operator matching Palace's real operator shape.
-**`ceed-occa` now supports every restriction type and libCEED entry point
-Palace's own code calls, on CPU/OpenMP.** Metal itself remains
-untouched/unreachable (section 8) -- no Apple hardware exists to test it,
-and it has exactly one remaining, independent blocker: `CeedScalar` is
-hardcoded to `double` and Metal was never wired into `ceed-occa`'s resource
-parser.
+**`ceed-occa` now supports every restriction type Palace's own code
+creates, and every libCEED entry point this document actually tested, on
+CPU/OpenMP** (see section 7.9 for the entry points that were not tested
+either way -- `CeedOperatorMultigridLevelCreate`/`CeedOperatorCoarsen`/
+`CeedBasisCreateProjection`). Metal itself now has exactly one documented
+blocker (section 8.2), unrelated to any restriction-type or fallback fix in
+this document: `CeedScalar` is hardcoded to `double`, and while
+`/gpu/metal/occa` is now recognized by `ceed-occa`'s resource parser, it
+deliberately errors out with a message explaining why, rather than
+attempting to run (no Apple hardware exists on this VM to test Metal
+execution itself either way).
 
 **Companion to:** the MFEM-side handoff doc,
 `doc/apple-metal-mlx-support-progress.md` in the `nikosavola/mfem` fork's
@@ -945,6 +950,21 @@ confirm no regression, and rebuilt from a pristine clone via the actual
 `PATCH_COMMAND` sequence (`git reset --hard && git clean -fd && git apply`)
 before finalizing -- not just against the hand-edited working tree.
 
+**One known divergence from the reference backend, `elem_size == 1`:** the
+reference implementation's loop structure (`CeedSize n = 0; ...; for (n = 1;
+n < elem_size - 1; n++) {...} <final block using n>`) leaves `n == 1` after
+a loop that never executes when `elem_size == 1`, and the final block then
+reads/writes node index 1 -- out of bounds for a 1-node element. This
+implementation does not replicate that: it always resolves each node
+correctly via the `n > 0` / `n < elemSize - 1` boundary checks, so for
+`elem_size == 1` it computes something sane (self-term only) while the
+reference is itself out of bounds. `elem_size == 1` curl-oriented
+restrictions have no real-world meaning (no finite element has a single
+curl-oriented DOF), so this was a deliberate choice, not an oversight -- but
+it means "bit-identical to the reference backend" has this one documented
+exception. Don't "fix" this implementation to match the reference's
+behavior at `elem_size == 1`; the reference is the one that's wrong there.
+
 **As a result: `ceed-occa` can now create and apply every restriction type
 Palace's own code creates**, on CPU/OpenMP, including for Palace's default
 3D H(curl) (Nedelec) element spaces. CUDA/HIP paths are code-identical
@@ -1054,20 +1074,22 @@ fixed and verified, mode-agnostically -- every one of these fixes is a
 host-array-based, backend-agnostic implementation with no OCCA-mode-specific
 code, so they apply identically to a hypothetical `/gpu/metal/occa` resource
 with no further work. **What's left, and it is now the only thing left, is
-section 8.2's precision question:** Metal was never wired into
-`ceed-occa`'s resource parser at all, for a reason that has nothing to do
-with any of the bugs fixed in section 7. Closing that is now a pure
-precision/build-system question, not blocked on any further correctness
+section 8.2's precision question:** `CeedScalar` is hardcoded to `double`,
+for a reason that has nothing to do with any of the bugs fixed in section
+7 (Metal's resource string is now recognized and gives a specific error
+about this, per this session's fifth patch -- see 8.2). Closing the
+precision question itself is a pure precision/build-system question, not
+blocked on any further correctness
 work inside `ceed-occa` itself (modulo the CUDA/HIP-untested and
 Basis/QFunction-foreign-vector caveats in section 7.9, which are lower risk
 and orthogonal to Metal specifically).
 
-### 8.2 The remaining blocker: Metal was never wired into `ceed-occa`'s resource parser, and there's a real reason why
+### 8.2 The remaining blocker: `CeedScalar` is hardcoded to `double`, and there's a real reason Metal was never wired up
 
-Checked directly: `grep -rniE "metal" backends/occa/` across libCEED's entire
-OCCA backend returns exactly one hit,
-`ceed-occa.cpp:52`, a bare comment inside `getDefaultDeviceMode()`'s GPU
-priority list:
+Before this session's fifth patch, checked directly: `grep -rniE "metal"
+backends/occa/` across libCEED's entire OCCA backend returned exactly one
+hit, `ceed-occa.cpp:52`, a bare comment inside `getDefaultDeviceMode()`'s
+GPU priority list:
 
 ```cpp
 if (gpuMode) {
@@ -1079,11 +1101,22 @@ if (gpuMode) {
 }
 ```
 
-`getDeviceMode()` (the function that parses a resource string like
-`/gpu/cuda/occa` into an OCCA mode name) has no `"metal"` case at all --
-Metal isn't gated off, it was simply never added. The comment says why:
-**`CeedScalar` is hardcoded to `double`, and Metal's double-precision support
-is poor-to-absent on Apple GPUs.** Verified directly, not inferred from the
+Neither `getDeviceMode()`/`splitCeedResource()` (which parse a resource
+string like `/gpu/cuda/occa` into an OCCA mode name) nor
+`CeedRegister_Occa()` (which tells libCEED's own top-level backend-matching
+step that `ceed-occa` handles a given resource string at all) had a
+`"metal"` case -- so `/gpu/metal/occa` failed with libCEED's generic "No
+suitable backend" message, giving no hint why. **Fixed (fifth patch, this
+session), but only the error message, not the underlying constraint:**
+`/gpu/metal/occa` is now registered and parsed, and reaches `ceed-occa`'s
+own `initCeed()`, which gives a specific error explaining the real
+constraint below, instead of the generic message. This is scoped
+deliberately narrowly -- no attempt was made at an actual float/Metal
+execution path, since that's not verifiable without Apple hardware.
+
+The comment above says why Metal was never wired up for real: **`CeedScalar`
+is hardcoded to `double`, and Metal's double-precision support is
+poor-to-absent on Apple GPUs.** Verified directly, not inferred from the
 comment alone: `include/ceed/types.h:153` does
 
 ```c
@@ -1154,7 +1187,7 @@ enters the picture. Worth knowing going in, not just for the Metal case.
 
 **Don't patch MFEM to chase Metal.** Nothing found across any pass of this
 session points at MFEM. Real, substantial progress was made and is
-committed on the libCEED side, in four patches to
+committed on the libCEED side, in five patches to
 `extern/patch/libceed/patch_occa_operator_fallback.diff`:
 
 1. `ceed-occa`'s `LinearAssembleAddDiagonal` (Jacobi/Chebyshev smoothing)
@@ -1186,29 +1219,47 @@ committed on the libCEED side, in four patches to
    conditions specifically chosen to catch a subtle indexing error
    (`elem_size >= 3`, non-degenerate tridiagonal values, overlapping
    indices for transpose accumulation).
+5. `/gpu/metal/occa` is now recognized by `ceed-occa`'s own resource
+   registration and parsing (it wasn't at all before -- neither libCEED's
+   top-level backend matching nor `ceed-occa`'s internal `splitCeedResource`
+   knew this string existed, so it failed with libCEED's generic "No
+   suitable backend" message). It now reaches `ceed-occa`'s own `initCeed()`
+   and errors out there with a specific, actionable message naming the
+   `CeedScalar`-is-`double` constraint (section 8.2) -- this is the only
+   Metal-specific code change made this session, and deliberately does not
+   attempt an actual float/Metal execution path, which is untestable
+   without Apple hardware.
 
-**`ceed-occa` now supports every restriction type and every entry point
-Palace's own code calls, on CPU and OpenMP**, verified with real numerics
-against the reference backend. **One blocker remains, and it is now
-Metal-specific and only Metal-specific:**
+**`ceed-occa` now supports every restriction type Palace's own code
+creates, and every libCEED entry point this document actually tested, on
+CPU and OpenMP** (section 7.8's caveat on entry points not checked either
+way still applies -- see section 7.9), verified with real numerics against
+the reference backend. **One blocker remains, and it is Metal-specific and
+only Metal-specific:**
 
-Metal's precision question (section 8.2), unchanged by anything in this
-session. `CeedScalar` is hardcoded to `double` with no Metal registration
-in `ceed-occa`'s resource parser at all, and Palace's zero-copy
-`mfem::real_t`<->`CeedScalar` aliasing (`CEED_USE_POINTER` in
-`palace/fem/libceed/operator.cpp`) means fixing this is a whole-stack
-precision decision (libCEED *and* MFEM would both need to move to single
-precision together), not a local patch to either. See section 8.2's two
-options (whole-stack precision flip, or a Metal-specific single-precision
-path inside `ceed-occa` alone).
+Metal's precision question (section 8.2), unchanged in substance by
+anything in this session (only the resource-string handling around it
+changed, per item 5 above). `CeedScalar` is hardcoded to `double`, and
+Palace's zero-copy `mfem::real_t`<->`CeedScalar` aliasing
+(`CEED_USE_POINTER` in `palace/fem/libceed/operator.cpp`) means fixing this
+is a whole-stack precision decision (libCEED *and* MFEM would both need to
+move to single precision together), not a local patch to either. See
+section 8.2's two options (whole-stack precision flip, or a Metal-specific
+single-precision path inside `ceed-occa` alone). This was deliberately not
+attempted this session -- it isn't verifiable without Apple hardware, and
+committing to either option is a bigger, cross-cutting decision than
+anything else on this branch, per the advisor consultation that shaped this
+session's scope.
 
 **Suggested next step:** section 5, step 6, is now unblocked for Palace's
 actual default configuration -- run a real Palace configuration using
 Nedelec/H(curl) elements against `/cpu/self/occa` or `/cpu/openmp/occa` on
 real hardware. This is the first genuine end-to-end test of everything
 fixed in this document; everything so far used a synthetic operator, not
-the actual Palace binary. Only after that succeeds does Metal's precision
-question become the relevant next blocker for Metal specifically -- it's
-independent of the CPU/OpenMP run and can be designed in parallel if
-preferred, but validating on real hardware first is cheap and would catch
-anything section 7's synthetic-operator tests missed.
+the actual Palace binary. It should now get past mesh/restriction setup
+(previously blocked); if it doesn't, check section 7.9's unchecked entry
+points first before assuming something new is broken. Only after that
+succeeds does Metal's precision question become the relevant next blocker
+for Metal specifically -- it's independent of the CPU/OpenMP run and can be
+designed in parallel if preferred, but validating on real hardware first is
+cheap and would catch anything section 7's synthetic-operator tests missed.
