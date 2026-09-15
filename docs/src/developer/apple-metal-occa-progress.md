@@ -12,18 +12,21 @@ and verified on a Linux x86 VM with no Apple hardware. This carries the MFEM-sid
 work in the `occa-metal-apple-support` branch of
 [`nikosavola/mfem`](https://github.com/nikosavola/mfem) into Palace's own CMake
 superbuild, per the same branch/task in
-[`nikosavola/palace`](https://github.com/nikosavola/palace). Two further
+[`nikosavola/palace`](https://github.com/nikosavola/palace). Three further
 passes wire and patch libCEED's own OCCA backend (`ceed-occa`) -- see
-section 7: every libCEED entry point Palace's own code calls
-(`CeedOperatorApply`, `CeedOperatorLinearAssembleAddDiagonal`, and now
-`CeedOperatorLinearAssembleSymbolic`/`CeedOperatorLinearAssemble` for full
-sparse-matrix assembly, needed by Palace's default AMS/AMG solves) is
-verified working correctly on `/cpu/self/occa` and `/cpu/openmp/occa`,
-including on a composite operator matching Palace's real operator shape.
+section 7: `CeedOperatorApply`, `CeedOperatorLinearAssembleAddDiagonal`,
+`CeedOperatorLinearAssembleSymbolic`/`CeedOperatorLinearAssemble` (full
+sparse-matrix assembly, needed by Palace's default AMS/AMG solves), and
+`CeedElemRestrictionCreateOriented` are all verified working correctly on
+`/cpu/self/occa` and `/cpu/openmp/occa`, including on a composite operator
+matching Palace's real operator shape. **But Palace's actual primary use
+case -- 3D H(curl)/Nedelec element spaces -- is still blocked on every
+`ceed-occa` mode, CPU/OpenMP included:** `CeedElemRestrictionCreateCurlOriented`
+still hard-aborts (section 7.7), and this has nothing to do with Metal.
 Metal itself remains untouched/unreachable (section 8) -- no Apple hardware
-exists to test it, and it has one remaining blocker, unrelated to anything
-fixed in section 7: `CeedScalar` is hardcoded to `double` and Metal was
-never wired into `ceed-occa`'s resource parser.
+exists to test it, and once curl-oriented restrictions are fixed, it has
+one remaining, independent blocker: `CeedScalar` is hardcoded to `double`
+and Metal was never wired into `ceed-occa`'s resource parser.
 
 **Companion to:** the MFEM-side handoff doc,
 `doc/apple-metal-mlx-support-progress.md` in the `nikosavola/mfem` fork's
@@ -70,31 +73,36 @@ Do not oversell what this commit does. It is exactly what WP2 (build-system
 skeleton) asks for -- making the MFEM-side experiment buildable and pointable
 from Palace -- and nothing more.
 
-**Update (third pass):** the two routes above (Palace switching to
+**Update (fourth pass):** the two routes above (Palace switching to
 `mfem::BilinearForm`, or libCEED growing a Metal backend) turned out not to
 be a clean either/or. libCEED already ships an OCCA backend of its own
 (`backends/occa`, `ceed-occa`) -- Palace's superbuild simply never built it.
-Section 7 wires that up and, after three passes (fixing a real bug in
+Section 7 wires that up and, after four passes (fixing a real bug in
 `ceed-occa`'s operator registration, fixing a real bug in libCEED's own
-fallback-operator construction as it interacts with `ceed-occa`, and fixing
-a bug in this document's own earlier testing), the accurate summary is:
-**every libCEED entry point Palace's own code calls --
-`CeedOperatorApply`, `CeedOperatorLinearAssembleAddDiagonal`
-(Jacobi/Chebyshev smoothing), and `CeedOperatorLinearAssembleSymbolic`/
+fallback-operator construction as it interacts with `ceed-occa`, fixing a
+bug in this document's own earlier testing, and adding
+`CeedElemRestrictionCreateOriented` support), the accurate summary is:
+**`CeedOperatorApply`, `CeedOperatorLinearAssembleAddDiagonal`
+(Jacobi/Chebyshev smoothing), `CeedOperatorLinearAssembleSymbolic`/
 `CeedOperatorLinearAssemble` (full sparse-matrix assembly, needed by every
-AMS/AMG-preconditioned solve) -- now works correctly on `ceed-occa`,
-verified with real numerics against the reference backend, including on a
-composite operator matching Palace's real operator shape.** Section 8
-covers Metal specifically, which still has one real, independent blocker
-unrelated to anything fixed in section 7 (a precision issue, not an
-Operator-support issue). Read sections 7 and 8 in full -- two earlier
-drafts of this document got section 7.4 and then section 7.6 wrong before
-arriving here (7.4: attributed a crash to a missing `ceed-occa` include
-path that was actually a bug in this document's own test harness; 7.6:
-found and initially left a real segfault as "not fixed, too risky," then
-fixed it after a closer look showed it was safely scoped to one file) --
-that history matters for anyone skimming just the headlines instead of
-reading the corrections.
+AMS/AMG-preconditioned solve), and `CeedElemRestrictionCreateOriented` all
+now work correctly on `ceed-occa`, verified with real numerics against the
+reference backend, including on a composite operator matching Palace's
+real operator shape -- but `CeedElemRestrictionCreateCurlOriented` does
+not, and that blocks Palace's default 3D H(curl) element spaces on every
+`ceed-occa` mode today, independent of Metal.** Section 8 covers Metal
+specifically, which has its own separate, independent blocker (a precision
+issue) that only becomes reachable once curl-oriented restrictions are also
+fixed. Read sections 7 and 8 in full -- earlier drafts of this document got
+section 7.4, then 7.6, then the "every entry point" claim in 7.8 wrong
+before arriving here (7.4: attributed a crash to a missing `ceed-occa`
+include path that was actually a bug in this document's own test harness;
+7.6: found and initially left a real segfault as "not fixed, too risky,"
+then fixed it after a closer look showed it was safely scoped to one file;
+7.8: claimed full entry-point coverage without having checked
+`CeedElemRestrictionCreateOriented`/`CreateCurlOriented`, which Palace also
+calls) -- that history matters for anyone skimming just the headlines
+instead of reading the corrections.
 
 ## 2. What was implemented, file by file
 
@@ -376,25 +384,35 @@ cmake --build build-metal --target mfem -j
 #    file's "Backend" field under "Solver" (palace/utils/configfile.cpp,
 #    ceed_backend -- no Palace source change needed, ConfigureCeedBackend()
 #    in palace/main.cpp already passes this straight through to CeedInit()).
-#    Expect: this should work, including Palace's default AMS/AMG
-#    preconditioning -- section 7.5/7.6 fixed and verified every libCEED
-#    entry point Palace calls, including CeedOperatorLinearAssembleSymbolic/
-#    CeedOperatorLinearAssemble (the segfault that made this NOT work
-#    earlier in this session, before the section 7.6 patch). If a real run
-#    still fails, that's genuinely new information -- this session's
+#    IMPORTANT: use a scalar (H1) test problem first, e.g. a simple
+#    electrostatics/Poisson-type config, NOT Palace's default 3D H(curl)
+#    (Nedelec edge-element) full-wave configuration -- section 7.7 found
+#    that CeedElemRestrictionCreateCurlOriented still hard-aborts on every
+#    ceed-occa mode, so a default eigenmode/driven full-wave run WILL abort
+#    at mesh/restriction setup, before assembly is ever reached. For an H1
+#    problem, expect this to work, including Palace's default AMS/AMG
+#    preconditioning -- sections 7.5-7.7 fixed and verified every libCEED
+#    entry point an H1 problem exercises. If a real run still fails on an
+#    H1 problem, that's genuinely new information -- this session's
 #    verification used a synthetic operator, not the actual Palace binary
-#    (see 7.7's caveat) -- so check first whether the failure matches
-#    something *not* covered by section 7.8's "remaining gaps, not
-#    attempted" list (e.g. a foreign-vector crash somewhere other than
-#    ElemRestriction) before assuming it's an unrelated problem.
+#    -- so check first whether the failure matches something *not* covered
+#    by section 7.9's "remaining gaps, not attempted" list (e.g. a
+#    foreign-vector crash somewhere other than ElemRestriction) before
+#    assuming it's an unrelated problem.
 
-# 7. Once 6 is confirmed on real hardware: revisit section 8 for Metal
+# 6b. Fix CeedElemRestrictionCreateCurlOriented (section 7.7) before
+#     attempting Palace's actual default H(curl) configuration. This is the
+#     most valuable next step: it blocks Palace's primary use case on
+#     hardware this VM already has, independent of Metal entirely.
+
+# 7. Once 6/6b are confirmed on real hardware: revisit section 8 for Metal
 #    specifically. The only remaining blocker there is precision
 #    (section 8.2) -- CeedScalar hardcoded to double, no Metal case in
 #    ceed-occa's resource parser, and Palace's zero-copy real_t<->CeedScalar
 #    aliasing making this a whole-stack decision. Section 7's fixes already
 #    apply to any ceed-occa mode, Metal included, so there's no separate
-#    "full-assembly on Metal" problem to solve -- only the precision one.
+#    "full-assembly on Metal" or "curl-oriented on Metal" problem to solve
+#    beyond what 6b already covers -- only the precision one.
 
 # 8. If/when Palace's own operators are ever reconsidered for an OCCA/Metal
 #    path (see section 1's "what this would actually require") -- that is a
@@ -767,42 +785,196 @@ Bit-identical again. This is the strongest available evidence on this VM
 that the fix generalizes to Palace's actual operator shape, not just a
 single-sub-operator synthetic test.
 
-### 7.7 What this means for Palace, concretely
+**Follow-up verification (this session, later pass):** the fix above
+(`ElemRestriction::applyGeneric()`) has four branches -- forward/transpose x
+indexed/strided -- and every test run up to this point only ever exercised
+the forward, indexed branch (that's the only combination
+`CeedOperatorAssembleSymbolicSingle` happens to call). The other three were
+implemented but never actually run. Built a standalone test comparing
+`applyGeneric`'s foreign-vector path against the real native OCCA kernel
+directly (bypassing the operator-fallback machinery, calling
+`CeedElemRestrictionApply` on ref-backed vectors against an occa-created
+restriction), for all four combinations, with overlapping element indices so
+transpose scatter-add genuinely accumulates:
+
+```
+native transpose result:            1 2.5 3.3 3.1 2.9 3.7
+foreign (applyGeneric) transpose:   1 2.5 3.3 3.1 2.9 3.7
+TRANSPOSE TEST: PASS (0 mismatches)
+
+native strided forward:   1 1.13 1.26 ... 2.43
+foreign strided forward:  1 1.13 1.26 ... 2.43
+native strided transpose: 2 2.07 2.14 ... 2.77
+foreign strided transpose:2 2.07 2.14 ... 2.77
+STRIDED TEST: PASS (0 mismatches)
+```
+
+All four branches bit-identical. The fix from this subsection is fully
+verified, not just the one branch Palace's specific call pattern happens to
+exercise.
+
+### 7.7 Fixed (third patch): `CeedElemRestrictionCreateOriented` -- and a new, more serious blocker found alongside it: `CeedElemRestrictionCreateCurlOriented`
+
+While confirming the scope of what's now verified (section 7.8 below), a
+direct check of every `Ceed*` call Palace's own code makes
+(`palace/fem/libceed/restriction.cpp`) turned up two calls that hit a gap
+nothing above touches: `CeedElemRestrictionCreateOriented` and
+`CeedElemRestrictionCreateCurlOriented`. Checked directly in `ceed-occa`
+(`backends/occa/ceed-occa-elem-restriction.cpp`, before this patch):
+
+```cpp
+CeedRestrictionType rstr_type;
+CeedCallBackend(CeedElemRestrictionGetType(r, &rstr_type));
+if ((rstr_type == CEED_RESTRICTION_ORIENTED) || (rstr_type == CEED_RESTRICTION_CURL_ORIENTED)) {
+  return staticCeedError("(OCCA) Backend does not implement CeedElemRestrictionCreateOriented or CeedElemRestrictionCreateCurlOriented");
+}
+```
+
+This is not a stub that gets bypassed by a fallback mechanism the way
+section 7.5's diagonal stubs were -- it is a hard error at **restriction
+creation time**, before any operator, QFunction, or assembly call happens.
+Confirmed by direct test that this actually aborts the process (libCEED's
+default error handler calls `abort()`, not just returns an error code):
+
+```
+$ ./test_transpose   # calls CeedElemRestrictionCreateOriented directly
+.../ceed-occa-ceed-object.cpp:29 in staticCeedError(): (OCCA) Backend does
+not implement CeedElemRestrictionCreateOriented or
+CeedElemRestrictionCreateCurlOriented
+Aborted (core dumped)
+```
+
+**Why this matters far more than anything fixed so far:** checked directly
+where Palace calls these two functions
+(`grep -n "CreateOriented\|CreateCurlOriented" palace/fem/libceed/restriction.cpp`):
+
+- `CeedElemRestrictionCreateOriented` is used whenever a tensor-product
+  element restriction has any DOF sign flip from element-to-element sharing
+  (`InitLexicoRestr`'s `use_el_orients`) -- common for any vector-valued or
+  shared-orientation space, not an edge case.
+- `CeedElemRestrictionCreateCurlOriented` is used whenever the finite
+  element has a non-identity `DofTransformation` in 3D
+  (`InitNativeRestr`'s `has_dof_trans`) -- which is exactly the case for
+  **3D Nedelec (H(curl)) elements**, Palace's default edge-element spaces
+  for full-wave Maxwell problems. This is not a corner of Palace; it's the
+  primary use case.
+
+So, independent of the Metal precision question (section 8.2) and
+independent of every fix in sections 7.5-7.6: **before this session's third
+patch, `ceed-occa` could not even build a restriction for Palace's default
+3D H(curl) spaces, on any mode, including CPU/OpenMP.** Every verification
+in sections 7.5-7.6 used a scalar (mass-matrix-style) synthetic operator,
+which never exercises this path -- that's why it wasn't caught earlier in
+this session.
+
+**Fixed, scoped, this session:** `CeedElemRestrictionCreateOriented` only.
+There is no native OCCA kernel for the sign flip (nor could there
+reasonably be one added quickly and correctly); it is applied via the same
+generic, backend-agnostic host implementation as section 7.6's
+`applyGeneric()` (extended with a per-node sign multiply), and
+`ElemRestriction::ceedApply` now routes *all* oriented-restriction applies
+through that path unconditionally (not just the foreign-vector case),
+since there's no faster native path to prefer. This means oriented
+restrictions work correctly on any occa mode, including a future Metal one,
+via the same `Vector::getArray` host round-trip already relied on
+elsewhere.
+
+Verified against the reference backend as an independent oracle (not
+occa-against-occa self-consistency, which is a weaker check) -- non-trivial,
+non-degenerate `bool` orientation pattern (mixed true/false across nodes
+and elements, not all-one-value), overlapping element indices so transpose
+accumulation is actually exercised, both directions, plus the
+foreign-vector path:
+
+```
+forward occa: 1 -1.31 1.62 4.1 -4.41 4.72 -1.62 1.93 -2.24 -4.72 5.03 -5.34 2.24 2.55 -2.86 5.34 5.65 -5.96
+forward ref : 1 -1.31 1.62 4.1 -4.41 4.72 -1.62 1.93 -2.24 -4.72 5.03 -5.34 2.24 2.55 -2.86 5.34 5.65 -5.96
+transpose occa: 2 -2.11 -0.44 2.77 0.44 3.43 -3.54 0 0 0 2.33 -2.44 -0.44 3.1 0.44 3.76 -3.87 0 0 0
+transpose ref : 2 -2.11 -0.44 2.77 0.44 3.43 -3.54 0 0 0 2.33 -2.44 -0.44 3.1 0.44 3.76 -3.87 0 0 0
+ORIENTED TEST: PASS (0 mismatches)
+```
+
+Bit-identical to the reference backend in both directions, and the
+foreign-vector path matched too.
+
+**Not fixed, deliberately, this session: `CeedElemRestrictionCreateCurlOriented`.**
+This is a meaningfully harder patch than the oriented-restriction fix above:
+the reference backend's implementation
+(`backends/ref/ceed-ref-restriction.c`,
+`CeedElemRestrictionApply{,Curl}OrientedNoTranspose/Transpose_Ref_Core`) is a
+tridiagonal transform over each element's local DOFs (`curl_orients` stores
+3 int8 coefficients per node: contributions from the node itself and its two
+neighbors), with different neighbor-offset math for the no-transpose vs.
+transpose directions, and separate boundary-case branches for the first and
+last node in an element (only one neighbor exists there). Porting this
+incorrectly would produce a *silently wrong* matrix -- a far worse failure
+mode than the hard abort it replaces -- rather than a visible crash, and it
+would only show up as a small error concentrated at element boundaries, easy
+for a coarse test to miss. This is real, scoped follow-on work, not
+something to rush: the next session should port both the no-transpose and
+transpose cores directly from the reference implementation (not derive one
+from the other), test with `elem_size >= 3` so there's a genuine interior
+node, use non-trivial tridiagonal values (not degenerate ±1-on-diagonal
+values that happen to coincide with the oriented case), and verify against
+the reference backend the same way section 7.7's oriented-restriction fix
+was verified above.
+
+### 7.8 What this means for Palace, concretely
 
 Two independent routes were identified for OCCA to reach Palace's real
 assembly (section 1):
 
 1. Via `mfem::BilinearForm` (MFEM's own OCCA-dispatching partial assembly) --
    closed, because Palace doesn't use that class at all (section 1).
-2. Via `ceed-occa` (libCEED's own OCCA backend) -- **now verified open** for
-   every operation Palace's own code calls: `CeedOperatorApply`/
-   `CeedOperatorApplyAdd` (matrix-free operator action),
-   `CeedOperatorLinearAssembleAddDiagonal` (Jacobi/Chebyshev smoothing), and
-   `CeedOperatorLinearAssembleSymbolic`/`CeedOperatorLinearAssemble` (full
-   sparse-matrix assembly, needed by `ParOperator::ParallelAssemble` for
-   every AMS/AMG-preconditioned solve) all work correctly and match the
+2. Via `ceed-occa` (libCEED's own OCCA backend) -- **verified working**,
+   individually, for the specific libCEED entry points exercised by this
+   session's tests: `CeedOperatorApply`/`CeedOperatorApplyAdd` (matrix-free
+   operator action), `CeedOperatorLinearAssembleAddDiagonal`
+   (Jacobi/Chebyshev smoothing), `CeedOperatorLinearAssembleSymbolic`/
+   `CeedOperatorLinearAssemble` (full sparse-matrix assembly, needed by
+   `ParOperator::ParallelAssemble` for every AMS/AMG-preconditioned solve),
+   and (section 7.7) `CeedElemRestrictionCreateOriented`. All match the
    reference backend exactly, including on a composite operator matching
    Palace's real operator shape.
 
-**What this is not:** a verified end-to-end run of the actual Palace binary
-against a real electromagnetics problem. What's verified here is every
-individual libCEED entry point Palace's `fem/libceed/operator.cpp` calls
-(`grep -rohE "Ceed[A-Za-z]+\(" palace/fem/libceed/*.cpp`, cross-checked
-against what actually executes without error and with correct numbers),
-exercised through a synthetic operator built the same way
-(`CeedOperatorCreateComposite` wrapping QFunction-based sub-operators with
-real `CeedElemRestriction`/`CeedBasis` fields). The next agent's first real
-test should be an actual Palace run (section 5, step 6) -- this session's
-verification is strong evidence it will work for a default, AMS/AMG-
-preconditioned configuration, not a substitute for running it.
+**This is narrower than "every entry point Palace calls" -- an earlier pass
+of this section overclaimed that, and it was wrong in a way that mattered:**
+`CeedElemRestrictionCreateCurlOriented` (section 7.7) is also called by
+Palace's own code, was not exercised by any test in this session before the
+oriented-restriction check, and does not work -- it still hard-aborts, on
+every occa mode, for Palace's default 3D H(curl) element spaces. Two entry
+points this document has not checked at all:
+`CeedOperatorMultigridLevelCreate`/`CeedOperatorCoarsen` (multigrid) and
+`CeedBasisCreateProjection` -- not confirmed either way; grep for their call
+sites in `palace/` before relying on them.
 
-### 7.8 Remaining gaps, not attempted
+**What this is not, even for the entry points that do work:** a verified
+end-to-end run of the actual Palace binary against a real electromagnetics
+problem. Every check in this document uses a synthetic operator built the
+same way Palace builds one (`CeedOperatorCreateComposite` wrapping
+QFunction-based sub-operators with real `CeedElemRestriction`/`CeedBasis`
+fields), not an actual Palace run. Given the section 7.7 finding, the next
+agent's first real test should specifically be a Palace configuration using
+Nedelec/H(curl) elements (Palace's default) -- expect it to fail at mesh
+setup with the `CeedElemRestrictionCreateCurlOriented` abort until that gap
+is closed, not to run to completion.
 
+### 7.9 Remaining gaps, not attempted
+
+- **`CeedElemRestrictionCreateCurlOriented`.** See section 7.7 for the full
+  writeup. This is the headline remaining gap in this document, ahead of
+  Metal's precision question (section 8): it blocks Palace's default 3D
+  H(curl) spaces on **every** `ceed-occa` mode, including CPU/OpenMP, not
+  just a hypothetical Metal one.
 - **`CeedElemRestrictionCreateAtPoints`** (a different, unrelated `ceed-occa`
   gap found while surveying `t5*` tests broadly: `"Backend does not implement
   CeedElemRestrictionCreateAtPoints"`). **Not relevant to Palace** -- checked
   directly, `grep -rn "AtPoints" palace/fem/libceed/*.cpp` returns nothing;
   Palace never calls it.
+- **`CeedOperatorMultigridLevelCreate`/`CeedOperatorCoarsen`/
+  `CeedBasisCreateProjection`.** Not checked in this session at all --
+  neither confirmed working nor confirmed broken. If Palace's multigrid
+  preconditioning path is exercised on `ceed-occa`, check these first.
 - **`CeedBasis`/`CeedQFunction` foreign-vector safety.** Only
   `ElemRestriction::ceedApply` was made defensive against foreign
   (non-occa) vectors, because that was the specific, reproduced crash site.
@@ -817,38 +989,48 @@ preconditioned configuration, not a substitute for running it.
   actually found, not "all of ceed-occa is now foreign-vector-safe."
 - **CUDA/HIP `ceed-occa` resources.** No CUDA/HIP toolchain on this VM;
   `occa modes` here only ever reports `Serial`/`OpenMP`. The section 7.5
-  fix's `/gpu/cuda/ref`/`/gpu/hip/ref` fallback selection, and this
-  section's fix on those modes, are both untested (code reviewed, not run)
+  fix's `/gpu/cuda/ref`/`/gpu/hip/ref` fallback selection, and the sections
+  7.6/7.7 fixes on those modes, are all untested (code reviewed, not run)
   for the same reason.
 
-## 8. Metal specifically: one blocker left, and it's not what earlier passes of this section said
+## 8. Metal specifically: a precision blocker, but not the only one left, and not the most urgent one
 
 The task framing going in was "get to OCCA, then get to Metal, patching MFEM
 as needed." Section 7 already shows the MFEM side isn't where the remaining
 work is -- MFEM's own `occa-metal` skeleton (the companion MFEM-side doc)
-rejects cleanly on non-Apple platforms exactly as designed, and the one real
-remaining blocker sits entirely inside libCEED, not MFEM. Section 8.1
-restates where things actually stand after section 7's fixes (much better
-than either earlier pass of this document said); 8.2 is the one real,
-independent, Metal-specific blocker that remains.
+rejects cleanly on non-Apple platforms exactly as designed, and every
+blocker found this session sits entirely inside libCEED, not MFEM. Section
+8.1 restates where things actually stand after section 7's fixes; 8.2 is the
+Metal-specific precision blocker. **Read section 7.7 first, though:**
+`CeedElemRestrictionCreateCurlOriented` blocks Palace's default 3D H(curl)
+spaces on every `ceed-occa` mode, Metal or not -- it needs to be fixed
+before the precision question below is even reachable for a real Palace
+problem.
 
-### 8.1 Blocker 1, now closed: full-assembly is fixed (section 7.6), on CPU/OpenMP -- what's actually left for Metal is purely the precision question
+### 8.1 Where things stand after section 7's fixes: two of three known blockers closed, one closed partially, the precision question untouched
 
-Two earlier passes of this section said different, both-eventually-wrong
-things: first that the `ceed-occa` Operator+QFunction path was categorically
-broken on every mode (corrected in 7.4 -- it wasn't, that was a test-harness
-bug), then that full sparse-matrix assembly segfaulted mode-agnostically due
-to a `CeedOperatorGetFallback` reparenting bug (corrected in 7.6 -- fixed,
-scoped inside `backends/occa/`, verified including on a composite operator).
-**As of this session, every libCEED entry point Palace's own code calls has
-been verified working correctly on `ceed-occa`'s CPU and OpenMP modes.**
+Three earlier passes of this section said different, mostly-wrong things:
+first that the `ceed-occa` Operator+QFunction path was categorically broken
+on every mode (corrected in 7.4 -- it wasn't, that was a test-harness bug),
+then that full sparse-matrix assembly segfaulted mode-agnostically due to a
+`CeedOperatorGetFallback` reparenting bug (fixed in 7.6, scoped inside
+`backends/occa/`, verified including on a composite operator), then (this
+pass) that "every libCEED entry point Palace's own code calls" was verified
+-- which section 7.7 shows was not true: `CeedElemRestrictionCreateOriented`
+was still a hard abort at the time, and its sibling
+`CeedElemRestrictionCreateCurlOriented` still is.
 
-What does that leave for Metal specifically? Not the full-assembly bug --
-that fix (7.6) is `ElemRestriction`-level and mode-agnostic; it would apply
-identically to a hypothetical `/gpu/metal/occa` resource, no Metal-specific
-work needed there. What's left is purely section 8.2's precision question:
-Metal was never wired into `ceed-occa`'s resource parser at all, for a
-reason that has nothing to do with the bugs fixed in section 7.
+**Status now:** diagonal assembly (7.5) and full sparse-matrix assembly
+(7.6) are fixed and verified, mode-agnostically -- they'd apply identically
+to a hypothetical `/gpu/metal/occa` resource, no Metal-specific work needed
+there. Oriented restrictions (7.7) are fixed and verified the same way.
+Curl-oriented restrictions (7.7) are **not** fixed -- and this blocks
+Palace's default 3D H(curl) element spaces on every mode today, CPU/OpenMP
+included, independent of Metal entirely. What's left *specifically for
+Metal*, once curl-oriented restrictions are also fixed, is section 8.2's
+precision question: Metal was never wired into `ceed-occa`'s resource
+parser at all, for a reason that has nothing to do with any of the bugs
+fixed in section 7.
 
 ### 8.2 The remaining blocker: Metal was never wired into `ceed-occa`'s resource parser, and there's a real reason why
 
@@ -955,28 +1137,46 @@ committed on the libCEED side, in three patches to
    `CeedOperatorLinearAssemble`, needed by every AMS/AMG-preconditioned
    solve via `ParOperator::ParallelAssemble()`) -- is now fixed, scoped
    entirely inside `backends/occa/` (section 7.6), verified including on a
-   composite operator matching Palace's real operator shape.
+   composite operator matching Palace's real operator shape, and (this
+   session, later pass) verified on all four `applyGeneric` branches
+   (forward/transpose x indexed/strided), not just the one branch Palace's
+   specific call pattern happens to exercise.
+3. `CeedElemRestrictionCreateOriented`, previously a hard abort at
+   restriction-creation time (not a stub reachable by any fallback
+   mechanism), now works via the same generic host-array approach (section
+   7.7) -- verified against the reference backend as an independent oracle,
+   both directions, plus the foreign-vector path.
 
-**As a result, every libCEED entry point Palace's own code calls now works
-correctly on `ceed-occa`'s CPU and OpenMP modes**, verified with real
-numerics against the reference backend, not just "didn't crash." This is
-the strongest state this document has described.
+**Two blockers remain, and they are independent of each other and of
+everything fixed above:**
 
-**One real blocker remains, and it is specific to Metal, not to any of the
-bugs fixed above:**
+1. **`CeedElemRestrictionCreateCurlOriented` (section 7.7) -- the more
+   urgent one.** Still a hard abort, on every `ceed-occa` mode, including
+   CPU/OpenMP. This blocks Palace's default 3D H(curl)/Nedelec element
+   spaces -- its primary use case for full-wave Maxwell problems -- from
+   working with `ceed-occa` **at all**, independent of Metal. This is
+   scoped, real follow-on work (port the reference backend's tridiagonal
+   no-transpose/transpose cores, verify against the reference backend the
+   same way the oriented-restriction fix was verified), not started this
+   session because it's meaningfully riskier to get subtly wrong than what
+   was fixed (a silently-wrong assembled matrix, not a visible crash) --
+   see section 7.7 for what specifically to watch for.
+2. **Metal's precision question (section 8.2), unchanged.** `CeedScalar` is
+   hardcoded to `double` with no Metal registration in `ceed-occa`'s
+   resource parser at all, and Palace's zero-copy `mfem::real_t`<->
+   `CeedScalar` aliasing (`CEED_USE_POINTER` in
+   `palace/fem/libceed/operator.cpp`) means fixing this is a whole-stack
+   precision decision (libCEED *and* MFEM would both need to move to single
+   precision together), not a local patch to either.
 
-`CeedScalar` is hardcoded to `double` with no Metal registration in
-`ceed-occa`'s resource parser at all (section 8.2), and Palace's zero-copy
-`mfem::real_t`<->`CeedScalar` aliasing (`CEED_USE_POINTER` in
-`palace/fem/libceed/operator.cpp`) means fixing this is a whole-stack
-precision decision (libCEED *and* MFEM would both need to move to single
-precision together), not a local patch to either.
-
-If Metal-via-libCEED is still the goal, the actual next step is designing
-that precision story -- not build wiring, not the fallback mechanism (both
-now solid), and not anything reachable from Palace's or MFEM's build
-systems alone. Section 5, step 6, is the concrete next action regardless:
-run an actual Palace configuration against `/cpu/self/occa` or
-`/cpu/openmp/occa` on real hardware and confirm this session's verification
-holds for a real problem, before spending any effort on Metal's precision
-question specifically.
+**Suggested order for the next agent:** fix curl-oriented restrictions
+first -- it blocks Palace's actual default use case on hardware this VM
+already has, and closing it is what makes section 5 step 6 (an actual
+Palace run) possible for anything other than a scalar (H1) test problem.
+Only after that does Metal's precision question (item 2) become the
+relevant next blocker for Metal specifically. Section 5, step 6, is the
+concrete next action for confirming this session's per-entry-point
+verification holds for a real problem, but expect it to fail immediately
+against Palace's default H(curl) configuration until item 1 above is
+fixed -- try an H1 (scalar) test problem first if you want a run that can
+currently succeed.
