@@ -26,6 +26,9 @@ if(PALACE_BUILD_EXTERNAL_DEPS)
   if(PALACE_WITH_UMPIRE)
     list(APPEND MFEM_DEPENDENCIES umpire)
   endif()
+  if(PALACE_WITH_OCCA)
+    list(APPEND MFEM_DEPENDENCIES occa)
+  endif()
 else()
   set(MFEM_DEPENDENCIES)
 endif()
@@ -165,6 +168,21 @@ if(PALACE_WITH_GSLIB)
   else()
     list(APPEND MFEM_OPTIONS "-DGSLIB_DIR=${GSLIB_DIR}")
   endif()
+endif()
+
+# MFEM with OCCA (experimental; see PALACE_WITH_OCCA and
+# docs/src/developer/apple-metal-occa-progress.md). This only threads MFEM_USE_OCCA/
+# OCCA_DIR through to MFEM's own CMake configure step -- it does not by itself give
+# Palace's own operators any OCCA/Metal acceleration; see the doc above for why.
+if(PALACE_WITH_OCCA)
+  list(APPEND MFEM_OPTIONS "-DMFEM_USE_OCCA=YES")
+  if(PALACE_BUILD_EXTERNAL_DEPS)
+    list(APPEND MFEM_OPTIONS "-DOCCA_DIR=${CMAKE_INSTALL_PREFIX}")
+  else()
+    list(APPEND MFEM_OPTIONS "-DOCCA_DIR=${OCCA_DIR}")
+  endif()
+else()
+  list(APPEND MFEM_OPTIONS "-DMFEM_USE_OCCA=NO")
 endif()
 
 # Configure the rest of MFEM's dependencies

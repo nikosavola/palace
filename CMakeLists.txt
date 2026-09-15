@@ -26,6 +26,12 @@ set(PALACE_WITH_OPENMP OFF CACHE BOOL "Use OpenMP for shared-memory parallelism"
 set(PALACE_WITH_CUDA OFF CACHE BOOL "Use CUDA for NVIDIA GPU support")
 set(PALACE_WITH_HIP OFF CACHE BOOL "Use HIP for AMD or NVIDIA GPU support")
 set(PALACE_WITH_GPU_AWARE_MPI OFF CACHE BOOL "Option to set if MPI distribution is GPU aware")
+set(PALACE_WITH_OCCA OFF CACHE BOOL
+  "Build with OCCA support for MFEM's OCCA integration (experimental, currently only \
+useful as a step toward Apple Metal GPU support via MFEM -- Palace's own operators are \
+built on libCEED, not OCCA, and gain nothing from this today; see \
+docs/src/developer/apple-metal-occa-progress.md)"
+)
 
 set(PALACE_BUILD_EXTERNAL_DEPS ON CACHE BOOL "Build external third-party dependency libraries")
 set(PALACE_WITH_SUPERLU ON CACHE BOOL "Build with SuperLU_DIST sparse direct solver")

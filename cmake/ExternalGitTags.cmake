@@ -151,6 +151,24 @@ set(EXTERN_MUMPS_GIT_TAG
   "Git tag for external MUMPS build"
 )
 
+# OCCA (experimental, only used when PALACE_WITH_OCCA is enabled -- see
+# cmake/ExternalOCCA.cmake and docs/src/developer/apple-metal-occa-progress.md). Pinned
+# at v2.0.0, the same version targeted by MFEM's own experimental OCCA Metal skeleton
+# (see EXTERN_MFEM_URL/EXTERN_MFEM_GIT_TAG above to point this superbuild's MFEM at that
+# work).
+set(EXTERN_OCCA_URL
+  "https://github.com/libocca/occa.git" CACHE STRING
+  "URL for external OCCA build"
+)
+set(EXTERN_OCCA_GIT_BRANCH
+  "main" CACHE STRING
+  "Git branch for external OCCA build"
+)
+set(EXTERN_OCCA_GIT_TAG
+  "v2.0.0" CACHE STRING
+  "Git tag for external OCCA build"
+)
+
 # ParMETIS
 set(EXTERN_PARMETIS_URL
   "https://bitbucket.org/petsc/pkg-parmetis.git" CACHE STRING

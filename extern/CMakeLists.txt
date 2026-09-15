@@ -103,6 +103,13 @@ endif()
 message(STATUS "==================== Configuring libCEED dependency ====================")
 include(ExternalLibCEED)
 
+# Add OCCA (experimental, for PALACE_WITH_OCCA -- see
+# docs/src/developer/apple-metal-occa-progress.md)
+if(PALACE_WITH_OCCA)
+  message(STATUS "====================== Configuring OCCA dependency ======================")
+  include(ExternalOCCA)
+endif()
+
 # Add MFEM
 message(STATUS "====================== Configuring MFEM dependency =====================")
 include(ExternalMFEM)
