@@ -12,7 +12,7 @@ and verified on a Linux x86 VM with no Apple hardware. This carries the MFEM-sid
 work in the `occa-metal-apple-support` branch of
 [`nikosavola/mfem`](https://github.com/nikosavola/mfem) into Palace's own CMake
 superbuild, per the same branch/task in
-[`nikosavola/palace`](https://github.com/nikosavola/palace). Four further
+[`nikosavola/palace`](https://github.com/nikosavola/palace). Five further
 passes wire and patch libCEED's own OCCA backend (`ceed-occa`) -- see
 section 7: `CeedOperatorApply`, `CeedOperatorLinearAssembleAddDiagonal`,
 `CeedOperatorLinearAssembleSymbolic`/`CeedOperatorLinearAssemble` (full
@@ -25,13 +25,21 @@ including on a composite operator matching Palace's real operator shape.
 creates, and every libCEED entry point this document actually tested, on
 CPU/OpenMP** (see section 7.9 for the entry points that were not tested
 either way -- `CeedOperatorMultigridLevelCreate`/`CeedOperatorCoarsen`/
-`CeedBasisCreateProjection`). Metal itself now has exactly one documented
-blocker (section 8.2), unrelated to any restriction-type or fallback fix in
-this document: `CeedScalar` is hardcoded to `double`, and while
-`/gpu/metal/occa` is now recognized by `ceed-occa`'s resource parser, it
-deliberately errors out with a message explaining why, rather than
-attempting to run (no Apple hardware exists on this VM to test Metal
-execution itself either way).
+`CeedBasisCreateProjection`). `/gpu/metal/occa` is now recognized by
+`ceed-occa`'s resource parser and errors out with a specific message
+explaining why, rather than attempting to run.
+
+**A sixth pass (section 9) then followed up on that Metal precision
+blocker directly** -- and found something more consequential: libCEED can
+genuinely be built `float`-only (verified), and MFEM+HYPRE genuinely
+interoperate correctly in single precision (verified with a real
+AMG-preconditioned solve), but **Palace's own source code does not compile
+under single precision at all** -- `palace/linalg/hypre.cpp` casts
+`mfem::real_t*` to `double*` in three places, which is a hard type error
+under `MFEM_USE_SINGLE`, and this is one instance of roughly 1243 hardcoded
+`double` occurrences across Palace's own numerical code. This, not
+anything TPL-side, is what actually stands between this branch and a
+working Metal path today -- see section 9 for the full evidence and scope.
 
 **Companion to:** the MFEM-side handoff doc,
 `doc/apple-metal-mlx-support-progress.md` in the `nikosavola/mfem` fork's
@@ -1263,3 +1271,230 @@ succeeds does Metal's precision question become the relevant next blocker
 for Metal specifically -- it's independent of the CPU/OpenMP run and can be
 designed in parallel if preferred, but validating on real hardware first is
 cheap and would catch anything section 7's synthetic-operator tests missed.
+
+## 9. The precision question (section 8.2), followed up: what's actually verified now
+
+Section 8.2 identified `CeedScalar` (hardcoded `double`) as the one
+remaining Metal-specific blocker, and framed fixing it as "a whole-stack
+precision decision." This section reports what was actually tried this
+pass: the TPL layer (libCEED, and separately MFEM+HYPRE) was checked for
+real single-precision viability, and **Palace's own source code turned out
+to be a harder blocker than any of the TPLs** -- found by direct
+inspection, not assumed. Read 9.3 before drawing any conclusion from 9.1/9.2
+about "Palace is ready for Metal" -- it is not.
+
+### 9.1 libCEED: a working FP32 patch exists, verified self-consistent, not yet wired to any Palace option
+
+New patch file, `extern/patch/libceed/patch_precision_fp32.diff`, one line:
+`include/ceed/types.h`'s `#include "ceed-f64.h"` changed to `#include
+"ceed-f32.h"`. Both headers are already complete, self-contained
+`typedef ... CeedScalar` definitions shipped with this libCEED pin (section
+8.2 already found `ceed-f32.h` exists but is never included by
+anything) -- this patch is the entire change needed to make `CeedScalar`
+`float` throughout libCEED.
+
+Built libCEED with this patch applied (no `PALACE_WITH_OCCA`, just the
+base `ref`/`cpu` backends -- OCCA/Metal specifically is irrelevant to
+whether `CeedScalar` itself can be `float`) and verified against the
+*installed* headers (the check that would catch an ABI mismatch, not just
+"it compiled"):
+
+```
+$ ./test_fp32_sizeof
+sizeof(CeedScalar) = 4
+CEED_SCALAR_TYPE = 0 (CEED_SCALAR_FP32=0, CEED_SCALAR_FP64=1)
+CEED_SCALAR_IS_FP32 defined
+quadrature weight sum (expect 2.0): 2.00000024
+```
+
+`sizeof(CeedScalar) == 4` confirms the type is genuinely `float`, not just
+a stale enum tag. The quadrature-weight check is a real computation (a
+Gauss-Lobatto basis's quadrature weights should sum to exactly 2.0, the
+reference interval length) coming back as `2.00000024` instead of `2.0` --
+the ~1.2e-7 relative error is exactly what float32 rounding predicts,
+confirming the library is genuinely computing in single precision, not
+reporting a type it isn't using.
+
+**Deliberately not wired into `PALACE_WITH_OCCA` or any other Palace CMake
+option.** There is no Palace configuration that could use it yet (section
+9.3), so adding a `PALACE_PRECISION` toggle now would offer a build option
+that cannot produce a working build -- worse than no option. This patch is
+kept standalone so the next agent (once section 9.3's blocker is resolved,
+or if only libCEED-level precision work is wanted independent of Palace)
+doesn't have to rediscover that the fix is this simple.
+
+### 9.2 MFEM + HYPRE: verified to interoperate correctly in single precision, independent of Palace
+
+MFEM already has full upstream single-precision support (`MFEM_PRECISION`
+CMake option -> `MFEM_USE_SINGLE`/`MFEM_USE_DOUBLE`, `config/config.hpp`
+typedefs `real_t` accordingly) and HYPRE has a matching option
+(`HYPRE_ENABLE_SINGLE` -> `HYPRE_Real = float`). MFEM's own
+`linalg/hypre.hpp` enforces the pairing at compile time:
+
+```cpp
+#elif defined(MFEM_USE_SINGLE) && !defined(HYPRE_SINGLE)
+#error "MFEM_USE_SINGLE=YES requires HYPRE build with --enable-single!"
+```
+
+Built both at Palace's exact pinned commits (`EXTERN_HYPRE_GIT_TAG`/
+`EXTERN_MFEM_GIT_TAG` in `cmake/ExternalGitTags.cmake`) in two
+configurations -- double (baseline) and single (`HYPRE_ENABLE_SINGLE=ON` +
+`MFEM_PRECISION=single`) -- and ran MFEM's own `examples/ex1p` (2D Poisson,
+full assembly, `HypreBoomerAMG`-preconditioned `CGSolver`, the same
+solve-path shape as Palace's default AMS/AMG-preconditioned configuration)
+on 2 MPI ranks against both. Chosen because MFEM's own source is
+`real_t`-clean throughout (verified: `grep -n "const_cast<double"
+linalg/hypre.cpp` inside MFEM's own tree returns nothing), so this
+isolates the HYPRE<->MFEM precision contract without Palace's own code in
+the way.
+
+```
+double: PRECISION_CHECK ||x||_2 = 5.0028238455e+01  sizeof(real_t) = 8
+single: PRECISION_CHECK ||x||_2 = 5.0026911553e+01  sizeof(real_t) = 4
+```
+
+Relative difference: ~2.65e-5 -- consistent with expected float32 precision
+loss for a converged PDE solve, not a sign of a broken or silently-still-
+double computation (both `sizeof(real_t)` values and the installed
+`HYPRE_config.h`'s `typedef float HYPRE_Real` were checked directly, not
+inferred). Both runs used `CGSolver` with `HypreBoomerAMG`, converged in 21
+iterations with an near-identical reduction factor (0.2577 vs 0.257678);
+the per-iteration residual values differ increasingly from double's as
+iterations progress (expected -- single- and double-precision BoomerAMG
+setup produce non-identical, but both effective, AMG hierarchies from the
+same matrix, since coarsening/interpolation involve floating-point
+threshold comparisons that need not agree bit-for-bit across precisions).
+
+**This is a real, positive result at the TPL level: MFEM and HYPRE, built
+consistently in single precision, solve a real AMG-preconditioned linear
+system correctly.** This is exactly the TPL-level foundation the earlier
+"whole-stack precision decision" language in section 8.2 was gesturing at
+-- and it holds up under an actual test, not just a claim.
+
+### 9.3 The actual blocker: Palace's own source code hardcodes `double`, independent of any TPL
+
+Checked directly, this pass, in response to the obvious next question ("if
+MFEM+HYPRE+libCEED can all be single precision, can Palace?"):
+`palace/linalg/hypre.cpp` -- Palace's own thin wrapper exposing
+`mfem::real_t`-typed data to raw HYPRE structs -- does this at lines 28, 34,
+and 57:
+
+```cpp
+hypre_VectorData(vec) = const_cast<double *>(x.Read());       // line 28, 34
+hypre_CSRMatrixData(mat) = const_cast<double *>(m.ReadData()); // line 57
+```
+
+`x.Read()` and `m.ReadData()` return `const mfem::real_t *`. Under
+`MFEM_USE_SINGLE`, that is `const float *`. **`const_cast<double *>` cannot
+change a pointer's pointee type -- only add/remove `const`/`volatile`.**
+This is not a slow path or a precision-loss path; it is a hard compile
+error the moment `MFEM_USE_SINGLE` is defined. Palace's own code blocks
+single precision before HYPRE's or libCEED's precision assumptions are
+even reached.
+
+This is not an isolated site. `palace/linalg/petsc.hpp:13` has its own,
+independent hardcoded-double assumption -- a deliberate compile-time guard,
+not a bug: `#error "PETSc should be compiled with double precision!"`.
+And more broadly, as a scale indicator (not a precise defect count --
+many of these are legitimate, e.g. `std::numeric_limits<double>::epsilon()`
+used as a fixed tolerance, or genuinely double-precision-only external
+data): `grep -rn "\bdouble\b" palace/linalg/ palace/fem/ palace/models/
+palace/drivers/ palace/utils/` (excluding `mfem::real_t`, comments, and
+`std::complex<double>`) returns **1243 matches across 60+ files**. Getting
+Palace itself to build and run correctly under `MFEM_USE_SINGLE` is a
+source-code precision-audit project touching most of `palace/linalg/` and
+parts of `palace/fem/`, `palace/models/`, and `palace/drivers/` -- not a
+build-system toggle, and meaningfully larger than anything else attempted
+on this branch.
+
+**What the fix would need to look like, concretely, for the sites found so
+far:** the `hypre.cpp` sites want `const_cast<mfem::real_t *>` (or a real
+type-matching accessor) instead of `double *`, but that alone is not
+sufficient -- `hypre_VectorData`/`hypre_CSRMatrixData` are raw
+`HYPRE_Real*` in HYPRE's own headers, so the fix additionally requires
+`HYPRE_Real` and `mfem::real_t` to match (i.e., Palace's HYPRE build would
+also need `HYPRE_ENABLE_SINGLE=ON` whenever `MFEM_USE_SINGLE` is set,
+exactly as section 9.2 verified in isolation). The `petsc.hpp` site is a
+statement that Palace's SLEPc/PETSc eigenvalue solver path has not been
+audited for single precision at all and would need its own investigation
+(PETSc supports a single-precision build, but Palace's `ExternalSLEPc.cmake`
+does not wire it, and this document makes no claim about whether that path
+would work).
+
+### 9.4 Corroborating research: is the Metal double-precision constraint even real?
+
+Asked directly, since the code comment this whole precision investigation
+traces back to (`ceed-occa.cpp:52`'s `// Metal doesn't support doubles`)
+is a single unattributed line. Checked independently, not taking the
+comment's word for it:
+
+- **Apple's own hardware and language constraint, confirmed from multiple
+  independent sources.** Apple Silicon and Apple GPUs generally have no
+  FP64 hardware support at all, and Metal Shading Language has no `double`
+  type -- confirmed current as of the MSL 4.1 specification, not just an
+  old limitation. This is a hardware/language-level fact independent of
+  OCCA or libCEED entirely.
+- **OCCA's own maintainers said exactly this, years before the comment in
+  `ceed-occa.cpp` was likely written.** [OCCA issue #242](https://github.com/libocca/occa/issues/242)
+  (opened 2019, tracking Metal-backend limitations): *"Metal doesn't
+  support doubles and longs, but we could do auto-conversion between
+  double/floats and long/ints."* -- i.e., OCCA's own team confirms the
+  constraint and had proposed a lossy auto-conversion workaround.
+- **That auto-conversion was never implemented.** Checked directly in the
+  OCCA 2.0.0 source this branch's MFEM-side work already vendors
+  (`~/dev/occa-ref/src/occa/internal/modes/metal/`,
+  `~/dev/occa-ref/src/occa/internal/api/metal/`): `grep -rniE
+  "double|fp64|float64"` across every Metal-backend source file returns
+  only host-side wall-clock timer code (`double timeBetween(...)`,
+  `double getTime()`), nothing related to kernel data types or
+  double-to-float conversion. **An OKL kernel that declares a `double`
+  today would have no conversion path on OCCA's Metal mode at all** -- not
+  a slow emulated path, nothing.
+
+**Conclusion: the precision constraint is real, well-documented from
+multiple independent angles, and not something a newer OCCA/Metal release
+is likely to have quietly resolved.** It is a hardware and language
+limitation of Apple GPUs and Metal Shading Language itself, not a
+libCEED- or Palace-specific choice that could be worked around locally.
+Section 8.2's two options (whole-stack float, or a Metal-specific
+conversion layer inside `ceed-occa`) remain the only two ways forward, and
+neither is a small patch.
+
+### 9.5 Bottom line for the next agent
+
+**Don't say "single precision works" or "ready for Apple hardware" -- that
+overclaims what was actually verified.** What's true, precisely:
+
+- libCEED can be built with `CeedScalar = float`, self-consistently,
+  verified with a real computation. Not yet wired into any Palace option
+  (there's nothing for it to plug into yet).
+- MFEM and HYPRE, built consistently in single precision, correctly solve
+  a real AMG-preconditioned linear system (~2.65e-5 relative agreement
+  with double, on MFEM's own `ex1p`). This is the TPL-level result the
+  earlier "whole-stack precision decision" language was gesturing at, now
+  actually demonstrated rather than just asserted.
+- **Palace itself does not compile under `MFEM_USE_SINGLE` today.**
+  `palace/linalg/hypre.cpp:28,34,57`'s `const_cast<double *>` sites are a
+  hard compile error, not a slow path, and they're one instance of a
+  much broader pattern (~1243 hardcoded `double` occurrences across
+  `palace/linalg/`, `palace/fem/`, `palace/models/`, `palace/drivers/`,
+  `palace/utils/`). This -- not any TPL, not `ceed-occa`, not libCEED's
+  restriction support (section 7) -- is what actually stands between this
+  branch and a working Metal path today.
+- The Metal double-precision constraint itself is confirmed real from
+  independent sources (section 9.4), including OCCA's own maintainers and
+  the current Metal Shading Language specification -- this was worth
+  checking rather than assuming, and it checked out. There is no
+  newer-OCCA-version escape hatch.
+
+**Suggested next step, if precision work continues:** treat "port Palace to
+build and run correctly under `MFEM_USE_SINGLE`" as its own, separately
+scoped project -- start from `palace/linalg/hypre.cpp`'s three sites (the
+smallest, most concrete starting point, and the one that would immediately
+unblock testing further), then work outward through `palace/linalg/vector.cpp`
+and the other `palace/linalg/` files the grep in section 9.3 surfaces. Do
+not attempt this as a quick follow-on to the OCCA/libCEED work in section
+7 -- it's a materially different, larger kind of change (auditing existing
+numerical code for a type assumption, not adding a new backend capability),
+and deserves its own review and its own commits, not to be bundled with
+anything else on this branch.
