@@ -142,10 +142,20 @@ message(STATUS "LIBCEED_OPTIONS: ${LIBCEED_OPTIONS_PRINT}")
 # initCeed() instead, so CeedOperatorLinearAssembleAddDiagonal (used by
 # Palace's Jacobi/Chebyshev smoothers) transparently falls back to
 # /cpu/self/ref/serial (or /gpu/cuda/ref, /gpu/hip/ref) instead of aborting.
-# Does NOT fix CeedOperatorLinearAssembleSymbolic/CeedOperatorLinearAssemble
-# (full sparse-matrix assembly) -- that still segfaults via a separate,
-# deeper bug in how the fallback operator is constructed for
-# CeedElemRestriction-heavy paths; see the doc for the root cause.
+# Also fixes a segfault in CeedOperatorLinearAssembleSymbolic/
+# CeedOperatorLinearAssemble (full sparse-matrix assembly, needed by
+# Palace's default AMS/AMG-preconditioned solves) caused by
+# CeedElemRestrictionApply being handed vectors from a different (fallback)
+# Ceed than the restriction itself; ceed-occa's ElemRestriction now detects
+# this and routes through a generic, backend-agnostic host implementation.
+# Also implements CeedElemRestrictionCreateOriented (sign-flip restrictions,
+# used by Palace for tensor-product elements with non-trivial DOF
+# orientation), which ceed-occa did not support at all upstream (hard
+# CeedError, not just a stub) -- again via the generic host implementation.
+# Does NOT implement CeedElemRestrictionCreateCurlOriented (the tridiagonal
+# DOF-transformation restriction used by 3D Nedelec/H(curl) elements, e.g.
+# Palace's default edge-element spaces) -- ceed-occa still hard-errors on
+# this; see the doc for what that means for real Palace problems.
 if(PALACE_WITH_OCCA)
   set(LIBCEED_PATCH_FILES
     "${CMAKE_SOURCE_DIR}/extern/patch/libceed/patch_occa_operator_fallback.diff"

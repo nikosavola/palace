@@ -1,8 +1,65 @@
 diff --git a/backends/occa/ceed-occa-elem-restriction.cpp b/backends/occa/ceed-occa-elem-restriction.cpp
-index 026f45d9..765059fd 100644
+index 026f45d9..55cfa9c3 100644
 --- a/backends/occa/ceed-occa-elem-restriction.cpp
 +++ b/backends/occa/ceed-occa-elem-restriction.cpp
-@@ -278,6 +278,104 @@ int ElemRestriction::apply(CeedTransposeMode rTransposeMode, Vector &u, Vector &
+@@ -26,12 +26,18 @@ ElemRestriction::ElemRestriction()
+       ceedUnstridedComponentStride(0),
+       freeHostIndices(true),
+       hostIndices(NULL),
++      isOriented(false),
++      freeHostOrients(true),
++      hostOrients(NULL),
+       freeIndices(true) {}
+ 
+ ElemRestriction::~ElemRestriction() {
+   if (freeHostIndices) {
+     CeedFree(&hostIndices);
+   }
++  if (freeHostOrients) {
++    ::free(hostOrients);
++  }
+   if (freeIndices) {
+     indices.free();
+   }
+@@ -77,6 +83,37 @@ void ElemRestriction::setupFromDeviceMemory(CeedCopyMode copyMode, const CeedInt
+   }
+ }
+ 
++// CEED_RESTRICTION_ORIENTED support. There is no native OCCA kernel for
++// oriented restrictions (see applyGeneric() and ceedApply() below for why the
++// host-array-based path is used for these unconditionally); this only needs
++// to produce a host-readable bool array, regardless of the memType the
++// caller passed the orients in with.
++void ElemRestriction::setupOrients(CeedMemType memType, CeedCopyMode copyMode, const bool *orientsInput) {
++  isOriented             = true;
++  const CeedInt entries  = ceedElementCount * ceedElementSize;
++
++  if (memType == CEED_MEM_HOST) {
++    freeHostOrients = (copyMode == CEED_OWN_POINTER || copyMode == CEED_COPY_VALUES);
++    if (copyMode != CEED_COPY_VALUES) {
++      hostOrients = const_cast<bool *>(orientsInput);
++    } else {
++      const size_t bytes = entries * sizeof(bool);
++      hostOrients         = (bool *)::malloc(bytes);
++      std::memcpy(hostOrients, orientsInput, bytes);
++    }
++  } else {
++    // Device memory: always make our own host copy since orients are only
++    // ever consulted from the host-array-based apply path.
++    ::occa::memory deviceOrients = arrayToMemory(orientsInput);
++    freeHostOrients               = true;
++    hostOrients                   = (bool *)::malloc(entries * sizeof(bool));
++    deviceOrients.copyTo(hostOrients);
++    if (copyMode == CEED_OWN_POINTER) {
++      deviceOrients.free();
++    }
++  }
++}
++
+ bool ElemRestriction::usesIndices() { return indices.isInitialized(); }
+ 
+ void ElemRestriction::setupTransposeIndices() {
+@@ -278,6 +315,106 @@ int ElemRestriction::apply(CeedTransposeMode rTransposeMode, Vector &u, Vector &
    return CEED_ERROR_SUCCESS;
  }
  
@@ -60,9 +117,10 @@ index 026f45d9..765059fd 100644
 +      for (CeedInt node = 0; node < ceedElementSize; ++node) {
 +        const CeedInt vBase = node + e * ceedElementSize * ceedComponentCount;
 +        if (usesIdx) {
-+          const CeedInt index = hostIdx[node + e * ceedElementSize];
++          const CeedInt   index = hostIdx[node + e * ceedElementSize];
++          const CeedScalar sign  = (isOriented && hostOrients[node + e * ceedElementSize]) ? -1.0 : 1.0;
 +          for (CeedInt c = 0; c < ceedComponentCount; ++c) {
-+            vArray[vBase + c * ceedElementSize] = uArray[index + c * ceedUnstridedComponentStride];
++            vArray[vBase + c * ceedElementSize] = sign * uArray[index + c * ceedUnstridedComponentStride];
 +          }
 +        } else {
 +          for (CeedInt c = 0; c < ceedComponentCount; ++c) {
@@ -83,9 +141,10 @@ index 026f45d9..765059fd 100644
 +      for (CeedInt node = 0; node < ceedElementSize; ++node) {
 +        const CeedInt uBase = node + e * ceedElementSize * ceedComponentCount;
 +        if (usesIdx) {
-+          const CeedInt index = hostIdx[node + e * ceedElementSize];
++          const CeedInt   index = hostIdx[node + e * ceedElementSize];
++          const CeedScalar sign  = (isOriented && hostOrients[node + e * ceedElementSize]) ? -1.0 : 1.0;
 +          for (CeedInt c = 0; c < ceedComponentCount; ++c) {
-+            vArray[index + c * ceedUnstridedComponentStride] += uArray[uBase + c * ceedElementSize];
++            vArray[index + c * ceedUnstridedComponentStride] += sign * uArray[uBase + c * ceedElementSize];
 +          }
 +        } else {
 +          for (CeedInt c = 0; c < ceedComponentCount; ++c) {
@@ -107,7 +166,28 @@ index 026f45d9..765059fd 100644
  int ElemRestriction::getOffsets(CeedMemType memType, const CeedInt **offsets) {
    switch (memType) {
      case CEED_MEM_HOST: {
-@@ -334,12 +432,25 @@ int ElemRestriction::ceedCreate(CeedMemType memType, CeedCopyMode copyMode, cons
+@@ -308,8 +445,8 @@ int ElemRestriction::ceedCreate(CeedMemType memType, CeedCopyMode copyMode, cons
+ 
+   CeedRestrictionType rstr_type;
+   CeedCallBackend(CeedElemRestrictionGetType(r, &rstr_type));
+-  if ((rstr_type == CEED_RESTRICTION_ORIENTED) || (rstr_type == CEED_RESTRICTION_CURL_ORIENTED)) {
+-    return staticCeedError("(OCCA) Backend does not implement CeedElemRestrictionCreateOriented or CeedElemRestrictionCreateCurlOriented");
++  if (rstr_type == CEED_RESTRICTION_CURL_ORIENTED) {
++    return staticCeedError("(OCCA) Backend does not implement CeedElemRestrictionCreateCurlOriented");
+   }
+ 
+   ElemRestriction *elemRestriction = new ElemRestriction();
+@@ -318,6 +455,9 @@ int ElemRestriction::ceedCreate(CeedMemType memType, CeedCopyMode copyMode, cons
+   // Setup Ceed objects before setting up memory
+   elemRestriction = ElemRestriction::from(r);
+   elemRestriction->setup(memType, copyMode, indicesInput);
++  if (rstr_type == CEED_RESTRICTION_ORIENTED) {
++    elemRestriction->setupOrients(memType, copyMode, orientsInput);
++  }
+ 
+   CeedInt defaultLayout[3] = {1, elemRestriction->ceedElementSize, elemRestriction->ceedElementSize * elemRestriction->ceedComponentCount};
+   CeedCallBackend(CeedElemRestrictionSetELayout(r, defaultLayout));
+@@ -334,12 +474,28 @@ int ElemRestriction::ceedCreate(CeedMemType memType, CeedCopyMode copyMode, cons
  
  int ElemRestriction::ceedApply(CeedElemRestriction r, CeedTransposeMode tmode, CeedVector u, CeedVector v, CeedRequest *request) {
    ElemRestriction *elemRestriction = ElemRestriction::from(r);
@@ -126,7 +206,10 @@ index 026f45d9..765059fd 100644
 +  CeedCallBackend(CeedElemRestrictionGetCeed(r, &ceed));
 +  const bool foreign = ceedVectorIsForeign(u, ceed) || ceedVectorIsForeign(v, ceed);
 +  CeedCallBackend(CeedDestroy(&ceed));
-+  if (foreign) {
++  // CEED_RESTRICTION_ORIENTED has no native OCCA kernel (the sign flip is
++  // only implemented in applyGeneric's host path), so it always takes that
++  // path, foreign vectors or not.
++  if (foreign || elemRestriction->isOriented) {
 +    return elemRestriction->applyGeneric(tmode, u, v);
 +  }
 +
@@ -136,10 +219,33 @@ index 026f45d9..765059fd 100644
      return elemRestriction->ceedError("Incorrect CeedVector argument: u");
    }
 diff --git a/backends/occa/ceed-occa-elem-restriction.hpp b/backends/occa/ceed-occa-elem-restriction.hpp
-index 3fdc226d..b355df3a 100644
+index 3fdc226d..e043f9fd 100644
 --- a/backends/occa/ceed-occa-elem-restriction.hpp
 +++ b/backends/occa/ceed-occa-elem-restriction.hpp
-@@ -72,6 +72,12 @@ class ElemRestriction : public CeedObject {
+@@ -36,6 +36,13 @@ class ElemRestriction : public CeedObject {
+   bool     freeHostIndices;
+   CeedInt *hostIndices;
+ 
++  // CEED_RESTRICTION_ORIENTED support: sign flips per (node, element), same
++  // shape/indexing as hostIndices. NULL unless this restriction was created
++  // via CeedElemRestrictionCreateOriented. Owned iff freeHostOrients.
++  bool  isOriented;
++  bool  freeHostOrients;
++  bool *hostOrients;
++
+   // Owned resources
+   bool           freeIndices;
+   ::occa::memory indices;
+@@ -54,6 +61,8 @@ class ElemRestriction : public CeedObject {
+ 
+   void setup(CeedMemType memType, CeedCopyMode copyMode, const CeedInt *indicesInput);
+ 
++  void setupOrients(CeedMemType memType, CeedCopyMode copyMode, const bool *orientsInput);
++
+   void setupFromHostMemory(CeedCopyMode copyMode, const CeedInt *indices_h);
+ 
+   void setupFromDeviceMemory(CeedCopyMode copyMode, const CeedInt *indices_d);
+@@ -72,6 +81,12 @@ class ElemRestriction : public CeedObject {
  
    int apply(CeedTransposeMode rTransposeMode, Vector &u, Vector &v);
  
