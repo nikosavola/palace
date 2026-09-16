@@ -32,6 +32,13 @@ useful as a step toward Apple Metal GPU support via MFEM -- Palace's own operato
 built on libCEED, not OCCA, and gain nothing from this today; see \
 docs/src/developer/apple-metal-occa-progress.md)"
 )
+set(PALACE_PRECISION "double" CACHE STRING
+  "Floating-point precision for Palace, MFEM, HYPRE, and libCEED ('double' or 'single'; \
+experimental, see docs/src/developer/apple-metal-occa-progress.md -- 'single' is a \
+prerequisite for Apple Metal support via OCCA/libCEED, since Metal has no double-precision \
+support at all)"
+)
+set_property(CACHE PALACE_PRECISION PROPERTY STRINGS "double" "single")
 
 set(PALACE_BUILD_EXTERNAL_DEPS ON CACHE BOOL "Build external third-party dependency libraries")
 set(PALACE_WITH_SUPERLU ON CACHE BOOL "Build with SuperLU_DIST sparse direct solver")
@@ -169,6 +176,36 @@ if(PALACE_WITH_CUDA OR PALACE_WITH_HIP)
   set(PALACE_WITH_UMPIRE ON)
 else()
   set(PALACE_WITH_UMPIRE OFF)
+endif()
+
+# PALACE_PRECISION=single requires MFEM, HYPRE, and libCEED all built single-precision
+# together (see docs/src/developer/apple-metal-occa-progress.md, section 9): a mismatch
+# is either a hard compile error (MFEM enforces MFEM_USE_SINGLE<->HYPRE_SINGLE itself) or
+# silent memory misinterpretation (libCEED's CeedScalar, zero-copy aliased against
+# mfem::real_t). Several TPLs have their own hardcoded double-precision assumptions that
+# have not been audited or ported (PETSc/SLEPc explicitly refuses single precision at
+# compile time in palace/linalg/petsc.hpp; SuperLU_DIST, STRUMPACK, MUMPS, GSLIB, and
+# SUNDIALS have not been checked either way) -- rather than silently disabling these,
+# require the user to explicitly turn them off, so they know why they can't have them.
+if(NOT (PALACE_PRECISION STREQUAL "double" OR PALACE_PRECISION STREQUAL "single"))
+  message(FATAL_ERROR " *** Invalid PALACE_PRECISION = ${PALACE_PRECISION} "
+    "(must be 'double' or 'single')")
+endif()
+if(PALACE_PRECISION STREQUAL "single")
+  set(PALACE_PRECISION_INCOMPATIBLE_TPLS "")
+  foreach(TPL_OPTION IN ITEMS
+    PALACE_WITH_SUPERLU PALACE_WITH_STRUMPACK PALACE_WITH_MUMPS PALACE_WITH_SLEPC
+    PALACE_WITH_GSLIB PALACE_WITH_SUNDIALS
+  )
+    if(${TPL_OPTION})
+      list(APPEND PALACE_PRECISION_INCOMPATIBLE_TPLS ${TPL_OPTION})
+    endif()
+  endforeach()
+  if(PALACE_PRECISION_INCOMPATIBLE_TPLS)
+    message(FATAL_ERROR " *** PALACE_PRECISION=single is not compatible with: "
+      "${PALACE_PRECISION_INCOMPATIBLE_TPLS} (not audited/ported for single precision -- "
+      "explicitly set these OFF to build with PALACE_PRECISION=single)")
+  endif()
 endif()
 
 # MPI is required for most dependency builds

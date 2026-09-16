@@ -158,14 +158,29 @@ message(STATUS "LIBCEED_OPTIONS: ${LIBCEED_OPTIONS_PRINT}")
 # backend's tridiagonal apply cores and verified against it as an
 # independent oracle; see the doc for details and remaining caveats
 # (CUDA/HIP untested, no GPU toolchain on the VM this was developed on).
+# Patch for PALACE_PRECISION=single (see docs/src/developer/apple-metal-occa-progress.md,
+# section 9): libCEED's CeedScalar is hardcoded to double via an unconditional
+# #include "ceed-f64.h" in include/ceed/types.h. ceed-f32.h (the single-precision
+# counterpart) already exists in this libCEED pin but is never included by anything; this
+# patch is the one-line change that includes it instead. Verified this makes CeedScalar
+# genuinely float (sizeof(CeedScalar) == 4, and a real quadrature-weight computation shows
+# float32-consistent rounding), independent of PALACE_WITH_OCCA.
+set(LIBCEED_PATCH_FILES)
 if(PALACE_WITH_OCCA)
-  set(LIBCEED_PATCH_FILES
+  list(APPEND LIBCEED_PATCH_FILES
     "${CMAKE_SOURCE_DIR}/extern/patch/libceed/patch_occa_operator_fallback.diff"
   )
+endif()
+if(PALACE_PRECISION STREQUAL "single")
+  list(APPEND LIBCEED_PATCH_FILES
+    "${CMAKE_SOURCE_DIR}/extern/patch/libceed/patch_precision_fp32.diff"
+  )
+endif()
+if(LIBCEED_PATCH_FILES)
   set(LIBCEED_PATCH_COMMAND
     git reset --hard &&
     git clean -fd &&
-    git apply "${LIBCEED_PATCH_FILES}"
+    git apply ${LIBCEED_PATCH_FILES}
   )
 else()
   set(LIBCEED_PATCH_COMMAND "")

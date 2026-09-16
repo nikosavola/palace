@@ -40,6 +40,10 @@ set(PALACE_WITH_SLEPC ON CACHE BOOL "Build with SLEPc eigenvalue solver")
 set(PALACE_WITH_ARPACK OFF CACHE BOOL "Build with ARPACK eigenvalue solver")
 set(PALACE_WITH_SUNDIALS ON CACHE BOOL "Build with SUNDIALS time integrators")
 set(PALACE_WITH_GSLIB ON CACHE BOOL "Build with GSLIB for high-order field interpolation")
+set(PALACE_PRECISION "double" CACHE STRING
+  "Floating-point precision for Palace, MFEM, HYPRE, and libCEED ('double' or 'single'; \
+experimental, see docs/src/developer/apple-metal-occa-progress.md)"
+)
 
 set(ANALYZE_SOURCES_CLANG_TIDY OFF CACHE BOOL "Run static analysis checks using clang-tidy")
 set(ANALYZE_SOURCES_CPPCHECK OFF CACHE BOOL "Run static analysis checks using cppcheck")
@@ -261,7 +265,7 @@ if(PALACE_WITH_SLEPC)
   if("${SLEPC_TARGET}" STREQUAL "")
     message(FATAL_ERROR "SLEPc could not be found, be sure to set SLEPC_DIR")
   endif()
-elseif(NOT PALACE_WITH_ARPACK)
+elseif(NOT PALACE_WITH_ARPACK AND NOT PALACE_PRECISION STREQUAL "single")
   message(FATAL_ERROR "Build requires at least one of ARPACK or SLEPc dependencies")
 endif()
 
@@ -272,8 +276,14 @@ if(PALACE_WITH_ARPACK)
   endif()
   find_package(arpackng REQUIRED CONFIG)
   message(STATUS "Found ARPACK: ${arpackng_VERSION} in ${arpackng_DIR}")
-elseif(NOT PALACE_WITH_SLEPC)
+elseif(NOT PALACE_WITH_SLEPC AND NOT PALACE_PRECISION STREQUAL "single")
   message(FATAL_ERROR "Build requires at least one of ARPACK or SLEPc dependencies")
+endif()
+if(PALACE_PRECISION STREQUAL "single" AND NOT PALACE_WITH_SLEPC AND NOT PALACE_WITH_ARPACK)
+  message(WARNING "PALACE_PRECISION=single with no eigenvalue solver enabled (both \
+SLEPc and ARPACK have unverified/unported single-precision support -- see \
+docs/src/developer/apple-metal-occa-progress.md): \"Eigenmode\" problems will not be \
+available in this build")
 endif()
 
 # Optionally configure static analysis

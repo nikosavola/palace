@@ -43,6 +43,14 @@ else()
     -DHYPRE_ENABLE_BIGINT=OFF
   )
 endif()
+
+# MFEM requires HYPRE_SINGLE (HYPRE_Real = float) whenever it is built with
+# MFEM_USE_SINGLE (see linalg/hypre.hpp's compile-time check in MFEM); see
+# docs/src/developer/apple-metal-occa-progress.md, section 9, for the full
+# precision-matching rationale.
+if(PALACE_PRECISION STREQUAL "single")
+  list(APPEND HYPRE_OPTIONS -DHYPRE_ENABLE_SINGLE=ON)
+endif()
 if(PALACE_WITH_OPENMP)
   list(APPEND HYPRE_OPTIONS -DHYPRE_ENABLE_OPENMP=ON)
 endif()
