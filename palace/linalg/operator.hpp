@@ -119,7 +119,7 @@ template <>
 struct SumOperatorTraits<Operator>
 {
   using VecType = Vector;
-  using ScalarType = double;
+  using ScalarType = mfem::real_t;
 };
 
 template <>
@@ -311,7 +311,7 @@ class BaseProductOperator
                                             ComplexVector, Vector>::type;
   using ScalarType =
       typename std::conditional<std::is_same<OperType, ComplexOperator>::value,
-                                std::complex<double>, double>::type;
+                                std::complex<double>, mfem::real_t>::type;
 
 private:
   const OperType &A, &B;
@@ -389,7 +389,7 @@ class BaseDiagonalOperator
                                             ComplexVector, Vector>::type;
   using ScalarType =
       typename std::conditional<std::is_same<OperType, ComplexOperator>::value,
-                                std::complex<double>, double>::type;
+                                std::complex<double>, mfem::real_t>::type;
 
 private:
   const VecType &d;
@@ -427,7 +427,7 @@ class BaseMultigridOperator : public OperType
                                             ComplexVector, Vector>::type;
   using ScalarType =
       typename std::conditional<std::is_same<OperType, ComplexOperator>::value,
-                                std::complex<double>, double>::type;
+                                std::complex<double>, mfem::real_t>::type;
 
 private:
   std::vector<std::unique_ptr<OperType>> ops, aux_ops;

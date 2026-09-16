@@ -178,7 +178,7 @@ template <int N>
 class StaticVector : public Vector
 {
 private:
-  double buff[N];
+  mfem::real_t buff[N];
 
 public:
   StaticVector() : Vector() { SetDataAndSize(buff, N); }

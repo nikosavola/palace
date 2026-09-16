@@ -36,7 +36,7 @@ private:
   mfem::Vector wave_vector;        // BZ-wrapped k_F (fixed) or k₀ = k_F/ω (freq-scaled).
   mfem::Vector wave_vector_bz;     // BZ-wrapped k_F (always k_F, never k₀). For BZ offset.
   double floquet_omega_ref = 0.0;  // Nondimensional; when > 0, k_F scales with frequency.
-  mfem::Array<double> mat_c0_min, mat_c0_max;
+  mfem::Array<mfem::real_t> mat_c0_min, mat_c0_max;
 
   // Are materials isotropic? True when all the material properties are effectively
   // scalar-valued (ie, true scalars or vectors with identical entries). Also true when a
@@ -66,7 +66,7 @@ private:
   auto Wrap(const mfem::DenseTensor &data, int attr) const
   {
     const int k = AttrToMat(attr);
-    return mfem::DenseMatrix(const_cast<double *>(data.GetData(k)), data.SizeI(),
+    return mfem::DenseMatrix(const_cast<mfem::real_t *>(data.GetData(k)), data.SizeI(),
                              data.SizeJ());
   }
 

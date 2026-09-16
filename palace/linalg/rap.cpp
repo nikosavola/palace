@@ -274,7 +274,7 @@ void ParOperator::MultTranspose(const Vector &x, Vector &y) const
   }
 }
 
-void ParOperator::AddMult(const Vector &x, Vector &y, const double a) const
+void ParOperator::AddMult(const Vector &x, Vector &y, const mfem::real_t a) const
 {
   MFEM_ASSERT(x.Size() == width && y.Size() == height,
               "Incompatible dimensions for ParOperator::AddMult!");
@@ -317,7 +317,7 @@ void ParOperator::AddMult(const Vector &x, Vector &y, const double a) const
   y.Add(a, ty);
 }
 
-void ParOperator::AddMultTranspose(const Vector &x, Vector &y, const double a) const
+void ParOperator::AddMultTranspose(const Vector &x, Vector &y, const mfem::real_t a) const
 {
   MFEM_ASSERT(x.Size() == height && y.Size() == width,
               "Incompatible dimensions for ParOperator::AddMultTranspose!");

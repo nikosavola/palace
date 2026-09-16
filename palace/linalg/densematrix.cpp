@@ -57,9 +57,9 @@ mfem::DenseMatrix MatrixFunction(const mfem::DenseMatrix &M,
     }
     // a d
     // d b
-    const double disc = std::sqrt((a - b) * (a - b) + 4.0 * d * d);
-    const double lambda1 = (a + b - disc) / 2.0;
-    const double lambda2 = (a + b + disc) / 2.0;
+    const mfem::real_t disc = std::sqrt((a - b) * (a - b) + 4.0 * d * d);
+    const mfem::real_t lambda1 = (a + b - disc) / 2.0;
+    const mfem::real_t lambda2 = (a + b + disc) / 2.0;
     const mfem::Vector v1{{d, lambda1 - a}};
     const mfem::Vector v2{{d, lambda2 - a}};
     AddMult_a_VVt(functor(lambda1) / (v1 * v1), v1, Mout);
@@ -90,10 +90,10 @@ mfem::DenseMatrix MatrixFunction(const mfem::DenseMatrix &M,
       // a d 0
       // d b 0
       // 0 0 c
-      const double disc = std::sqrt(a * a - 2.0 * a * b + b * b + 4.0 * d * d);
-      const double lambda1 = c;
-      const double lambda2 = (a + b - disc) / 2.0;
-      const double lambda3 = (a + b + disc) / 2.0;
+      const mfem::real_t disc = std::sqrt(a * a - 2.0 * a * b + b * b + 4.0 * d * d);
+      const mfem::real_t lambda1 = c;
+      const mfem::real_t lambda2 = (a + b - disc) / 2.0;
+      const mfem::real_t lambda3 = (a + b + disc) / 2.0;
       const mfem::Vector v1{{0.0, 0.0, 1.0}};
       const mfem::Vector v2{{-(-a + b + disc) / (2.0 * d), 1.0, 0.0}};
       const mfem::Vector v3{{-(-a + b - disc) / (2.0 * d), 1.0, 0.0}};
@@ -107,10 +107,10 @@ mfem::DenseMatrix MatrixFunction(const mfem::DenseMatrix &M,
       // a 0 0
       // 0 b e
       // 0 e c
-      const double disc = std::sqrt(b * b - 2.0 * b * c + c * c + 4.0 * e * e);
-      const double lambda1 = a;
-      const double lambda2 = 0.5 * (b + c - disc);
-      const double lambda3 = 0.5 * (b + c + disc);
+      const mfem::real_t disc = std::sqrt(b * b - 2.0 * b * c + c * c + 4.0 * e * e);
+      const mfem::real_t lambda1 = a;
+      const mfem::real_t lambda2 = 0.5 * (b + c - disc);
+      const mfem::real_t lambda3 = 0.5 * (b + c + disc);
       const mfem::Vector v1{{1.0, 0.0, 0.0}};
       const mfem::Vector v2{{0.0, -(-b + c + disc) / (2.0 * e), 1.0}};
       const mfem::Vector v3{{0.0, -(-b + c - disc) / (2.0 * e), 1.0}};
@@ -124,10 +124,10 @@ mfem::DenseMatrix MatrixFunction(const mfem::DenseMatrix &M,
       // a 0 f
       // 0 b 0
       // f 0 c
-      const double disc = std::sqrt(a * a - 2.0 * a * c + c * c + 4.0 * f * f);
-      const double lambda1 = b;
-      const double lambda2 = 0.5 * (a + c - disc);
-      const double lambda3 = 0.5 * (a + c + disc);
+      const mfem::real_t disc = std::sqrt(a * a - 2.0 * a * c + c * c + 4.0 * f * f);
+      const mfem::real_t lambda1 = b;
+      const mfem::real_t lambda2 = 0.5 * (a + c - disc);
+      const mfem::real_t lambda3 = 0.5 * (a + c + disc);
       const mfem::Vector v1{{0.0, 1.0, 0.0}};
       const mfem::Vector v2{{-(-a + c + disc) / (2.0 * f), 0.0, 1.0}};
       const mfem::Vector v3{{-(-a + c - disc) / (2.0 * f), 0.0, 1.0}};
@@ -154,10 +154,10 @@ mfem::DenseMatrix MatrixFunction(const mfem::DenseMatrix &M,
     const double x2 = -(a2mbmc * b2mamc * c2mamb) +
                       9.0 * (c2mamb * d2 + b2mamc * f2 + a2mbmc * e2) - 54.0 * d * e * f;
     const double phi = std::atan2(std::sqrt(4.0 * x1 * x1 * x1 - x2 * x2), x2);
-    const double lambda1 = (a + b + c - 2.0 * std::sqrt(x1) * std::cos(phi / 3.0)) / 3.0;
-    const double lambda2 =
+    const mfem::real_t lambda1 = (a + b + c - 2.0 * std::sqrt(x1) * std::cos(phi / 3.0)) / 3.0;
+    const mfem::real_t lambda2 =
         (a + b + c + 2.0 * std::sqrt(x1) * std::cos((phi - M_PI) / 3.0)) / 3.0;
-    const double lambda3 =
+    const mfem::real_t lambda3 =
         (a + b + c + 2.0 * std::sqrt(x1) * std::cos((phi + M_PI) / 3.0)) / 3.0;
 
     auto SafeDivide = [&](double x, double y)

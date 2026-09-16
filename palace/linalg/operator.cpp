@@ -445,7 +445,7 @@ void BaseDiagonalOperator<ComplexOperator>::Mult(const ComplexVector &x,
 
 template <>
 void BaseDiagonalOperator<Operator>::AddMult(const Vector &x, Vector &y,
-                                             const double a) const
+                                             const mfem::real_t a) const
 {
   const bool use_dev = x.UseDevice() || y.UseDevice();
   const int N = this->height;

@@ -213,7 +213,7 @@ public:
 
     // Compute Eₜ + n ⋅ Eₙ . The normal returned by GetNormal points out of the
     // computational domain, so we reverse it (direction of propagation is into the domain).
-    double normal_data[3];
+    mfem::real_t normal_data[3];
     mfem::Vector normal(normal_data, vdim);
     BdrGridFunctionCoefficient::GetNormal(*T_submesh, normal);
     if constexpr (Type == ValueType::REAL)
@@ -324,14 +324,14 @@ public:
     }();
 
     // Compute Re/Im{-1/i (ikₙ Eₜ + ∇ₜ Eₙ)} (t-gradient evaluated in boundary element).
-    double U_data[3];
+    mfem::real_t U_data[3];
     mfem::Vector U(U_data, vdim);
     if constexpr (Type == ValueType::REAL)
     {
       Et.Real().GetVectorValue(*T_submesh, ip, U);
       U *= -kn.real();
 
-      double dU_data[3];
+      mfem::real_t dU_data[3];
       mfem::Vector dU(dU_data, vdim);
       En.Imag().GetGradient(*T_submesh, dU);
       U -= dU;
@@ -341,7 +341,7 @@ public:
       Et.Imag().GetVectorValue(*T_submesh, ip, U);
       U *= -kn.real();
 
-      double dU_data[3];
+      mfem::real_t dU_data[3];
       mfem::Vector dU(dU_data, vdim);
       En.Real().GetGradient(*T_submesh, dU);
       U += dU;
@@ -814,7 +814,8 @@ std::complex<double> WavePortData::GetPower(GridFunction &E, GridFunction &B) co
     pr.UseDevice(false);
     pr.Assemble();
     pr.UseDevice(true);
-    dot = -(pr * E.Real()) - 1i * (pr * E.Imag());
+    dot = -static_cast<double>(pr * E.Real()) -
+          1i * static_cast<double>(pr * E.Imag());
   }
   {
     mfem::LinearForm pi(&nd_fespace);
@@ -823,7 +824,8 @@ std::complex<double> WavePortData::GetPower(GridFunction &E, GridFunction &B) co
     pi.UseDevice(false);
     pi.Assemble();
     pi.UseDevice(true);
-    dot += -(pi * E.Imag()) + 1i * (pi * E.Real());
+    dot += -static_cast<double>(pi * E.Imag()) +
+          1i * static_cast<double>(pi * E.Real());
   }
   Mpi::GlobalSum(1, &dot, nd_fespace.GetComm());
   return dot;

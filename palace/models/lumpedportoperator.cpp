@@ -259,7 +259,8 @@ std::complex<double> LumpedPortData::GetPower(GridFunction &E, GridFunction &B) 
     pr.UseDevice(false);
     pr.Assemble();
     pr.UseDevice(true);
-    dot = -(pr * E.Real()) + (has_imag ? -1i * (pr * E.Imag()) : 0.0);
+    dot = -static_cast<double>(pr * E.Real()) +
+          (has_imag ? -1i * static_cast<double>(pr * E.Imag()) : 0.0);
   }
   if (has_imag)
   {
@@ -269,7 +270,8 @@ std::complex<double> LumpedPortData::GetPower(GridFunction &E, GridFunction &B) 
     pi.UseDevice(false);
     pi.Assemble();
     pi.UseDevice(true);
-    dot += -(pi * E.Imag()) + 1i * (pi * E.Real());
+    dot += -static_cast<double>(pi * E.Imag()) +
+          1i * static_cast<double>(pi * E.Real());
     Mpi::GlobalSum(1, &dot, E.ParFESpace()->GetComm());
     return dot;
   }

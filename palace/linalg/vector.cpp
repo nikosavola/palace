@@ -80,7 +80,7 @@ void ComplexVector::Set(const std::complex<double> *py, int size, bool on_dev)
 {
   MFEM_ASSERT(size == Size(),
               "Mismatch in dimension for array of std::complex<double> in ComplexVector!");
-  auto SetImpl = [this](const double *Y, const int N, bool use_dev)
+  auto SetImpl = [this](const auto *Y, const int N, bool use_dev)
   {
     auto *XR = Real().Write(use_dev);
     auto *XI = Imag().Write(use_dev);

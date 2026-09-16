@@ -282,7 +282,7 @@ FloquetPortData::FloquetPortData(const config::FloquetPortData &data,
   // Cap MaxOrder at the mesh Nyquist limit: p-th order elements can resolve Fourier
   // modes with |B|×h < p×π. Beyond this, projections alias to ~0 with default quadrature.
   {
-    double h_max = 0.0;
+    mfem::real_t h_max = 0.0;
     for (int be = 0; be < mesh.GetNBE(); be++)
     {
       if (bdr_marker[mesh.GetBdrAttribute(be) - 1])

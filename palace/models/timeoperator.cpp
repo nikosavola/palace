@@ -179,7 +179,7 @@ public:
     du3 = RHS3;
   }
 
-  void ImplicitSolve(double dt, const Vector &u, Vector &k) override
+  void ImplicitSolve(mfem::real_t dt, const Vector &u, Vector &k) override
   {
     // Solve: M k = f(u + dt k, t)
     // Use block elimination to avoid solving a 3n x 3n linear system.
@@ -215,7 +215,7 @@ public:
     kspA->Mult(RHS1, k1);
 
     // k2 = rhs2 + dt k1
-    linalg::AXPBYPCZ(1.0, RHS2, dt, k1, 0.0, k2);
+    linalg::AXPBYPCZ(1.0, RHS2, static_cast<double>(dt), k1, 0.0, k2);
 
     // k3 = rhs3 - dt curl k2
     k3 = RHS3;
@@ -226,7 +226,7 @@ public:
 
   // Setup A = M - gamma J = M + gamma C + gamma^2 K
   int SUNImplicitSetup(const Vector &y, const Vector &fy, int jok, int *jcur,
-                       double gamma) override
+                       mfem::real_t gamma) override
   {
     // Update Jacobian matrix.
     if (!kspA || gamma != saved_gamma)
@@ -244,7 +244,7 @@ public:
   }
 
   // Solve (Mass - dt Jacobian) x = Mass b
-  int SUNImplicitSolve(const Vector &b, Vector &x, double tol) override
+  int SUNImplicitSolve(const Vector &b, Vector &x, mfem::real_t tol) override
   {
     Vector b1, b2, b3, x1, x2, x3, RHS1;
     b1.UseDevice(true);
@@ -407,8 +407,14 @@ void TimeOperator::Init()
 
 void TimeOperator::Step(double &t, double &dt)
 {
-  double dt_input = dt;
-  ode->Step(sol, t, dt);
+  // ode->Step (MFEM's ODESolver) takes mfem::real_t& references; t/dt here are this
+  // class's own double-typed interface (matching the driver's own double-typed waveform
+  // evaluation), so bridge through real_t-typed locals rather than changing this
+  // function's own signature.
+  mfem::real_t t_real = t, dt_real = dt;
+  const mfem::real_t dt_input = dt_real;
+  ode->Step(sol, t_real, dt_real);
+  t = t_real;
   // Ensure user-specified dt does not change.
   dt = dt_input;
 }

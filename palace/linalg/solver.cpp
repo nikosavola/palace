@@ -59,7 +59,7 @@ void MfemWrapperSolver<ComplexOperator>::SetOperator(const ComplexOperator &op)
       //     [Ai, -Ar]
       // We solve A [xr; -xi] = [br; bi]
       mfem::Array2D<const mfem::HypreParMatrix *> blocks(2, 2);
-      mfem::Array2D<double> block_coeffs(2, 2);
+      mfem::Array2D<mfem::real_t> block_coeffs(2, 2);
       blocks(0, 0) = hAr;
       blocks(0, 1) = hAi;
       blocks(1, 0) = hAi;

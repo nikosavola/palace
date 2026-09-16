@@ -67,7 +67,13 @@ void ProjectPathTo2D(std::vector<std::vector<double>> &path, const mfem::Vector 
     {
       continue;
     }
-    mfem::Vector p3d(p.data(), 3);
+    // p is a plain std::vector<double> (iodata/JSON-side, always double regardless of
+    // mfem::real_t), so copy into a real_t-typed Vector rather than aliasing it directly.
+    mfem::Vector p3d(3);
+    for (int i = 0; i < 3; i++)
+    {
+      p3d(i) = p[i];
+    }
     mfem::Vector p2d = mesh::Project3Dto2D(p3d, centroid, e1, e2);
     p.assign({p2d(0), p2d(1)});
   }
