@@ -30,11 +30,20 @@ enum class EigenSolverBackend : char
 {
   SLEPC,
   ARPACK,
+  // If neither is available (e.g. PALACE_PRECISION=single, where neither has
+  // verified/ported single-precision support -- see
+  // docs/src/developer/apple-metal-occa-progress.md), DEFAULT is unreachable in
+  // practice: no EigenSolverBackend value can be used to actually construct an
+  // eigenvalue solver, and attempting an "Eigenmode" problem fails with a clear
+  // message at runtime (see palace/drivers/eigensolver.cpp's MFEM_VERIFY). This
+  // fallback only exists so the enum itself compiles.
   DEFAULT =
 #if defined(PALACE_WITH_SLEPC)
       SLEPC
 #elif defined(PALACE_WITH_ARPACK)
       ARPACK
+#else
+      SLEPC
 #endif
 };
 

@@ -1023,7 +1023,10 @@ void ModeEigenSolver::SetUpEigenSolver(MPI_Comm comm)
 #elif defined(PALACE_WITH_ARPACK)
     type = EigenSolverBackend::ARPACK;
 #else
-#error "ModeEigenSolver requires building with ARPACK or SLEPc!"
+    MFEM_ABORT("ModeEigenSolver requires building with ARPACK or SLEPc (this build has "
+              "neither -- if built with PALACE_PRECISION=single, note that neither "
+              "eigensolver's single-precision support has been verified; see "
+              "docs/src/developer/apple-metal-occa-progress.md)!");
 #endif
   }
 

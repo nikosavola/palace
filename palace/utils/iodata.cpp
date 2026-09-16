@@ -555,7 +555,13 @@ void IoData::CheckConfiguration()
   // Validate build-availability of requested solver backends. Centralized here so
   // downstream code never encounters an unavailable backend at runtime.
 #if !defined(PALACE_WITH_SLEPC)
-  MFEM_VERIFY(solver.eigenmode.type != EigenSolverBackend::SLEPC,
+  // solver.eigenmode.type always resolves to a concrete backend value (even
+  // EigenSolverBackend::DEFAULT is resolved at compile time in utils/labels.hpp), including
+  // for problems that never use it -- only check this when an Eigenmode problem actually
+  // needs it. Wave ports use an eigensolver regardless of the top-level problem type, so
+  // those checks stay unconditional.
+  MFEM_VERIFY(problem.type != ProblemType::EIGENMODE ||
+                  solver.eigenmode.type != EigenSolverBackend::SLEPC,
               "Eigenmode solver backend SLEPc requested but Palace was not built with "
               "SLEPc support!");
   for (const auto &[idx, data] : boundaries.waveport)
@@ -567,7 +573,8 @@ void IoData::CheckConfiguration()
   }
 #endif
 #if !defined(PALACE_WITH_ARPACK)
-  MFEM_VERIFY(solver.eigenmode.type != EigenSolverBackend::ARPACK,
+  MFEM_VERIFY(problem.type != ProblemType::EIGENMODE ||
+                  solver.eigenmode.type != EigenSolverBackend::ARPACK,
               "Eigenmode solver backend ARPACK requested but Palace was not built with "
               "ARPACK support!");
   for (const auto &[idx, data] : boundaries.waveport)

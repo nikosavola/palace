@@ -85,9 +85,6 @@ EigenSolver::Solve(const std::vector<std::unique_ptr<Mesh>> &mesh) const
   // with λ = iω. In general, the system matrices are complex and symmetric.
   std::unique_ptr<EigenvalueSolver> eigen;
   const EigenSolverBackend type = iodata.solver.eigenmode.type;
-#if !defined(PALACE_WITH_ARPACK) && !defined(PALACE_WITH_SLEPC)
-#error "Eigenmode solver requires building with ARPACK or SLEPc!"
-#endif
 #if !defined(PALACE_WITH_SLEPC)
   if (nonlinear_type == NonlinearEigenSolver::SLP)
   {
@@ -153,6 +150,10 @@ EigenSolver::Solve(const std::vector<std::unique_ptr<Mesh>> &mesh) const
     eigen = std::move(slepc);
 #endif
   }
+  MFEM_VERIFY(eigen, "Eigenmode solver requires building with ARPACK or SLEPc "
+                     "(this build has neither -- if built with PALACE_PRECISION=single, "
+                     "note that neither eigensolver's single-precision support has been "
+                     "verified; see docs/src/developer/apple-metal-occa-progress.md)!");
   EigenvalueSolver::ScaleType scale = iodata.solver.eigenmode.scale
                                           ? EigenvalueSolver::ScaleType::NORM_2
                                           : EigenvalueSolver::ScaleType::NONE;
