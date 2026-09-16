@@ -35,12 +35,25 @@ namespace palace
 using Vector3dMap = Eigen::Map<Eigen::Vector3d>;
 using CVector3dMap = Eigen::Map<const Eigen::Vector3d>;
 
+// Eigen's geometry helpers throughout this file are deliberately kept double-precision
+// regardless of mfem::real_t (mesh geometry preprocessing, not the FEM solve itself), so
+// bridge explicitly at the boundary rather than templating CVector3dMap/Vector3dMap on
+// real_t.
+namespace
+{
+Eigen::Vector3d ColumnToVector3d(const mfem::DenseMatrix &m, int col)
+{
+  const mfem::real_t *c = m.GetColumn(col);
+  return {static_cast<double>(c[0]), static_cast<double>(c[1]), static_cast<double>(c[2])};
+}
+}  // namespace
+
 namespace
 {
 
 // Floating point precision for mesh IO. This precision is important, make sure nothing is
 // lost!
-constexpr auto MSH_FLT_PRECISION = std::numeric_limits<double>::max_digits10;
+constexpr auto MSH_FLT_PRECISION = std::numeric_limits<mfem::real_t>::max_digits10;
 
 // Load the serial mesh from disk.
 std::unique_ptr<mfem::Mesh> LoadMesh(const std::string &, bool,
@@ -556,7 +569,7 @@ mfem::Mesh MeshTetToHex(const mfem::Mesh &orig_mesh)
   // Add midpoints of edges, faces, and elements.
   auto AddCentroid = [&orig_mesh, &hex_mesh](const int *verts, int nv)
   {
-    double coord[3] = {0.0, 0.0, 0.0};
+    mfem::real_t coord[3] = {0.0, 0.0, 0.0};
     for (int i = 0; i < nv; i++)
     {
       for (int d = 0; d < orig_mesh.SpaceDimension(); d++)
@@ -789,7 +802,7 @@ void ScaleMesh(mfem::Mesh &mesh, double L)
   PalacePragmaOmp(parallel for schedule(static))
   for (int i = 0; i < mesh.GetNV(); i++)
   {
-    double *v = mesh.GetVertex(i);
+    mfem::real_t *v = mesh.GetVertex(i);
     std::transform(v, v + mesh.SpaceDimension(), v, [L](double val) { return val * L; });
   }
   if (auto *pmesh = dynamic_cast<mfem::ParMesh *>(&mesh))
@@ -797,7 +810,7 @@ void ScaleMesh(mfem::Mesh &mesh, double L)
     PalacePragmaOmp(parallel for schedule(static))
     for (int i = 0; i < pmesh->face_nbr_vertices.Size(); i++)
     {
-      double *v = pmesh->face_nbr_vertices[i]();
+      mfem::real_t *v = pmesh->face_nbr_vertices[i]();
       std::transform(v, v + mesh.SpaceDimension(), v, [L](double val) { return val * L; });
     }
   }
@@ -954,7 +967,7 @@ void GetAxisAlignedBoundingBox(const mfem::ParMesh &mesh, const mfem::Array<int>
     {
       for (int j = 0; j < nv; j++)
       {
-        const double *coord = mesh.GetVertex(v[j]);
+        const mfem::real_t *coord = mesh.GetVertex(v[j]);
         for (int d = 0; d < dim; d++)
         {
           if (coord[d] < min(d))
@@ -1094,11 +1107,11 @@ double BoundingBox::Area() const
   if (dim == 3)
   {
     return 4.0 *
-           CVector3dMap(axes.GetColumn(0)).cross(CVector3dMap(axes.GetColumn(1))).norm();
+           ColumnToVector3d(axes, 0).cross(ColumnToVector3d(axes, 1)).norm();
   }
   // 2D: area of the parallelogram spanned by the two axis vectors (2D cross product).
-  const double *a0 = axes.GetColumn(0);
-  const double *a1 = axes.GetColumn(1);
+  const mfem::real_t *a0 = axes.GetColumn(0);
+  const mfem::real_t *a1 = axes.GetColumn(1);
   return 4.0 * std::abs(a0[0] * a1[1] - a0[1] * a1[0]);
 }
 
@@ -1108,7 +1121,7 @@ double BoundingBox::Volume() const
   {
     return 0.0;
   }
-  return 2.0 * CVector3dMap(axes.GetColumn(2)).norm() * Area();
+  return 2.0 * ColumnToVector3d(axes, 2).norm() * Area();
 }
 
 mfem::DenseMatrix BoundingBox::Normals() const
@@ -1134,7 +1147,7 @@ mfem::Vector BoundingBox::Lengths() const
   mfem::Vector lengths(dim);
   for (int i = 0; i < dim; i++)
   {
-    const double *col = axes.GetColumn(i);
+    const mfem::real_t *col = axes.GetColumn(i);
     double nrm = 0.0;
     for (int j = 0; j < h; j++)
     {
@@ -1155,7 +1168,7 @@ mfem::Vector BoundingBox::Deviations(const mfem::Vector &direction) const
   mfem::Vector deviation_deg(dim);
   for (int i = 0; i < dim; i++)
   {
-    const double *col = axes.GetColumn(i);
+    const mfem::real_t *col = axes.GetColumn(i);
     double ax_norm = 0.0, dot = 0.0;
     for (int j = 0; j < h; j++)
     {
@@ -1782,7 +1795,7 @@ mfem::Vector ProjectSubmeshTo2D(mfem::Mesh &submesh, mfem::Vector &centroid,
   const int nv = submesh.GetNV();
   for (int i = 0; i < nv; i++)
   {
-    const double *v = submesh.GetVertex(i);
+    const mfem::real_t *v = submesh.GetVertex(i);
     for (int d = 0; d < 3; d++)
     {
       centroid(d) += v[d];
@@ -1836,7 +1849,7 @@ mfem::Vector ProjectSubmeshTo2D(mfem::Mesh &submesh, mfem::Vector &centroid,
       projected.resize(nv);
       for (int i = 0; i < nv; i++)
       {
-        const double *v = submesh.GetVertex(i);
+        const mfem::real_t *v = submesh.GetVertex(i);
         double dx = v[0] - centroid(0);
         double dy = v[1] - centroid(1);
         double dz = v[2] - centroid(2);
@@ -2425,8 +2438,23 @@ private:
     // should hopefully limit the amount of extra refinement required to ensure conformity
     // after the marked elements are refined. Marking will then discover only the longest
     // edges, which are those within the boundary to be cracked.
-    mfem::Array<mfem::real_t> lengths;
-    GetEdgeLengths2(v_to_v, lengths);
+    //
+    // Ported to mfem::Element::MarkEdge's current (DSTable, const int *order) signature --
+    // an older MFEM version this was originally written against took literal per-edge
+    // lengths directly (via a since-removed Mesh::GetEdgeLengths2 helper and a 3-argument
+    // MarkEdge overload); current MFEM instead ranks edges by length once
+    // (mfem::Mesh::GetEdgeOrdering) and passes that integer rank/order array. This mirrors
+    // GetEdgeOrdering's algorithm, with the same "deflate non-interface edge lengths"
+    // pre-processing step as before.
+    const int num_edges = v_to_v.NumberOfEntries();
+    mfem::Array<mfem::real_t> lengths(num_edges);
+    for (int i = 0; i < NumOfVertices; i++)
+    {
+      for (mfem::DSTable::RowIterator it(v_to_v, i); !it; ++it)
+      {
+        lengths[it.Index()] = GetLength(i, it.Column());
+      }
+    }
     const auto min_length = 0.01 * lengths.Min();
     for (int i = 0; i < v_to_v.NumberOfRows(); i++)
     {
@@ -2442,25 +2470,33 @@ private:
       }
     }
 
+    // Rank edges by (possibly deflated) length, matching mfem::Mesh::GetEdgeOrdering.
+    mfem::Array<mfem::Pair<mfem::real_t, int>> length_idx(num_edges);
+    for (int i = 0; i < num_edges; i++)
+    {
+      length_idx[i].one = lengths[i];
+      length_idx[i].two = i;
+    }
+    length_idx.Sort();
+    mfem::Array<int> order(num_edges);
+    for (int i = 0; i < num_edges; i++)
+    {
+      order[length_idx[i].two] = i;
+    }
+
     // Finish marking (see mfem::Mesh::MarkTetMeshForRefinement).
-    mfem::Array<int> indices(NumOfEdges);
-    std::iota(indices.begin(), indices.end(), 0);
     for (int i = 0; i < NumOfElements; i++)
     {
       if (elements[i]->GetType() == mfem::Element::TETRAHEDRON)
       {
-        MFEM_ASSERT(dynamic_cast<mfem::Tetrahedron *>(elements[i]),
-                    "Unexpected non-Tetrahedron element type!");
-        static_cast<mfem::Tetrahedron *>(elements[i])->MarkEdge(v_to_v, lengths, indices);
+        elements[i]->MarkEdge(v_to_v, order);
       }
     }
     for (int i = 0; i < NumOfBdrElements; i++)
     {
       if (boundary[i]->GetType() == mfem::Element::TRIANGLE)
       {
-        MFEM_ASSERT(dynamic_cast<mfem::Triangle *>(boundary[i]),
-                    "Unexpected non-Triangle element type!");
-        static_cast<mfem::Triangle *>(boundary[i])->MarkEdge(v_to_v, lengths, indices);
+        boundary[i]->MarkEdge(v_to_v, order);
       }
     }
   }
@@ -3459,7 +3495,7 @@ void RegionRefine(const config::RefinementData &refinement, mfem::Mesh &mesh)
         pointmat.SetSize(dim, nv);
         for (int j = 0; j < nv; j++)
         {
-          const double *coord = mesh.GetVertex(verts[j]);
+          const mfem::real_t *coord = mesh.GetVertex(verts[j]);
           for (int d = 0; d < dim; d++)
           {
             pointmat(d, j) = coord[d];
