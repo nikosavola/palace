@@ -121,8 +121,7 @@ MemoryStats ComputeStats(std::string label, long local_value, MPI_Comm comm)
 MemoryStats ComputeNodeMemoryStats(std::string label, long local_value, MPI_Comm comm)
 {
   // Split communicator into shared memory groups (processes on same node).
-  MPI_Comm node_comm;
-  MPI_Comm_split_type(comm, MPI_COMM_TYPE_SHARED, 0, MPI_INFO_NULL, &node_comm);
+  SharedMemoryComm node_comm(comm);
 
   // Get rank within the node.
   int node_rank = Mpi::Rank(node_comm);
@@ -162,7 +161,6 @@ MemoryStats ComputeNodeMemoryStats(std::string label, long local_value, MPI_Comm
   {
     MPI_Comm_free(&leaders_comm);
   }
-  MPI_Comm_free(&node_comm);
 
   return stats;
 }

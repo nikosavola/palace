@@ -9,6 +9,7 @@
 #include <limits>
 #include <map>
 #include <numeric>
+#include <optional>
 #include <queue>
 #include <set>
 #include <sstream>
@@ -143,15 +144,14 @@ std::unique_ptr<mfem::Mesh> Load(IoData &iodata, MPI_Comm comm)
     Mpi::Broadcast(1, &use_mesh_partitioner, 0, comm);
   }
 
-  MPI_Comm node_comm = MPI_COMM_NULL;
+  std::optional<SharedMemoryComm> node_comm;
   if (!use_mesh_partitioner)
   {
-    MPI_Comm_split_type(comm, MPI_COMM_TYPE_SHARED, Mpi::Rank(comm), MPI_INFO_NULL,
-                        &node_comm);
+    node_comm.emplace(comm);
   }
   {
     BlockTimer bt1(Timer::IO);
-    if (!use_mesh_partitioner && Mpi::Root(node_comm) && !Mpi::Root(comm))
+    if (!use_mesh_partitioner && Mpi::Root(*node_comm) && !Mpi::Root(comm))
     {
       // Only one process per node reads the serial mesh when not using the partitioner.
       smesh = LoadMesh(iodata.model.mesh, iodata.model.remove_curvature, iodata.boundaries);
@@ -160,10 +160,7 @@ std::unique_ptr<mfem::Mesh> Load(IoData &iodata, MPI_Comm comm)
     }
     Mpi::Barrier(comm);
   }
-  if (node_comm != MPI_COMM_NULL)
-  {
-    MPI_Comm_free(&node_comm);
-  }
+  node_comm.reset();
 
   if (!smesh)
   {
@@ -328,9 +325,7 @@ std::unique_ptr<mfem::ParMesh> Partition(IoData &iodata, std::unique_ptr<mfem::M
     // Send the preprocessed serial mesh and partitioning as a byte string. The
     // serialized mesh can exceed INT_MAX bytes for large meshes, so use a 64-bit
     // length and a chunked broadcast.
-    MPI_Comm node_comm;
-    MPI_Comm_split_type(comm, MPI_COMM_TYPE_SHARED, Mpi::Rank(comm), MPI_INFO_NULL,
-                        &node_comm);
+    std::optional<SharedMemoryComm> node_comm(std::in_place, comm);
     constexpr bool generate_edges = false, refine = true, fix_orientation = false;
     std::string so;
     std::int64_t slen = 0;
@@ -345,12 +340,12 @@ std::unique_ptr<mfem::ParMesh> Partition(IoData &iodata, std::unique_ptr<mfem::M
       so = fo.str();
       slen = static_cast<std::int64_t>(so.size());
     }
-    Mpi::Broadcast(1, &slen, 0, node_comm);
+    Mpi::Broadcast(1, &slen, 0, *node_comm);
     if (so.empty())
     {
       so.resize(slen);
     }
-    Mpi::BroadcastLarge(slen, so.data(), 0, node_comm);
+    Mpi::BroadcastLarge(slen, so.data(), 0, *node_comm);
     {
       std::istringstream fi(so);
       smesh = std::make_unique<mfem::Mesh>(fi, generate_edges, refine, fix_orientation);
@@ -367,8 +362,8 @@ std::unique_ptr<mfem::ParMesh> Partition(IoData &iodata, std::unique_ptr<mfem::M
     {
       partitioning = std::make_unique<int[]>(smesh->GetNE());
     }
-    Mpi::Broadcast(smesh->GetNE(), partitioning.get(), 0, node_comm);
-    MPI_Comm_free(&node_comm);
+    Mpi::Broadcast(smesh->GetNE(), partitioning.get(), 0, *node_comm);
+    node_comm.reset();
     pmesh = std::make_unique<mfem::ParMesh>(comm, *smesh, partitioning.get());
     smesh.reset();
   }

@@ -443,6 +443,30 @@ private:
   }
 };
 
+// Communicator of the processes sharing memory with this one (usually one node), split from
+// comm and freed on destruction.
+class SharedMemoryComm
+{
+  MPI_Comm comm = MPI_COMM_NULL;
+
+public:
+  explicit SharedMemoryComm(MPI_Comm parent)
+  {
+    MPI_Comm_split_type(parent, MPI_COMM_TYPE_SHARED, Mpi::Rank(parent), MPI_INFO_NULL,
+                        &comm);
+  }
+  SharedMemoryComm(const SharedMemoryComm &) = delete;
+  SharedMemoryComm &operator=(const SharedMemoryComm &) = delete;
+  ~SharedMemoryComm()
+  {
+    if (comm != MPI_COMM_NULL)
+    {
+      MPI_Comm_free(&comm);
+    }
+  }
+  operator MPI_Comm() const { return comm; }
+};
+
 }  // namespace palace
 
 #endif  // PALACE_UTILS_COMMUNICATION_HPP

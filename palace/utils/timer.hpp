@@ -341,10 +341,7 @@ public:
     }
 
     // Count nodes.
-    MPI_Comm node_comm;
-    MPI_Comm_split_type(comm, MPI_COMM_TYPE_SHARED, 0, MPI_INFO_NULL, &node_comm);
-    int node_rank = Mpi::Rank(node_comm);
-    MPI_Comm_free(&node_comm);
+    const int node_rank = Mpi::Rank(SharedMemoryComm(comm));
     int is_leader = (node_rank == 0) ? 1 : 0;
     num_nodes = 0;
     MPI_Allreduce(&is_leader, &num_nodes, 1, MPI_INT, MPI_SUM, comm);

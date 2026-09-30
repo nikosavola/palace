@@ -98,14 +98,13 @@ inline void ApplyOnEachNodeFilesystem(MPI_Comm comm, const std::string &operatio
   }
   Mpi::Barrier(comm);
 
-  MPI_Comm node_comm = MPI_COMM_NULL;
-  MPI_Comm_split_type(comm, MPI_COMM_TYPE_SHARED, Mpi::Rank(comm), MPI_INFO_NULL,
-                      &node_comm);
-  if (Mpi::Root(node_comm) && !Mpi::Root(comm))
   {
-    apply_here();
+    SharedMemoryComm node_comm(comm);
+    if (Mpi::Root(node_comm) && !Mpi::Root(comm))
+    {
+      apply_here();
+    }
   }
-  MPI_Comm_free(&node_comm);
 
   internal::AbortOnNodeFilesystemError(comm, operation, local_error);
 }
