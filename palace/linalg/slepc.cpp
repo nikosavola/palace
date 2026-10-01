@@ -485,11 +485,11 @@ PetscReal SlepcEigenvalueSolver::GetError(int i, EigenvalueSolver::ErrorType typ
   switch (type)
   {
     case ErrorType::ABSOLUTE:
-      return res.get()[i];
+      return res[i];
     case ErrorType::RELATIVE:
-      return res.get()[i] / PetscAbsScalar(GetEigenvalue(i));
+      return res[i] / PetscAbsScalar(GetEigenvalue(i));
     case ErrorType::BACKWARD:
-      return res.get()[i] / GetBackwardScaling(GetEigenvalue(i));
+      return res[i] / GetBackwardScaling(GetEigenvalue(i));
   }
   return 0.0;
 }
@@ -500,11 +500,10 @@ void SlepcEigenvalueSolver::RescaleEigenvectors(int num_eig)
   xscale = std::make_unique<PetscReal[]>(num_eig);
   for (int i = 0; i < num_eig; i++)
   {
-    xscale.get()[i] = 0.0;
+    xscale[i] = 0.0;
     GetEigenvector(i, x1);
-    xscale.get()[i] = 1.0 / GetEigenvectorNorm(x1, y1);
-    res.get()[i] =
-        GetResidualNorm(GetEigenvalue(i), x1, y1) / linalg::Norml2(GetComm(), x1);
+    xscale[i] = 1.0 / GetEigenvectorNorm(x1, y1);
+    res[i] = GetResidualNorm(GetEigenvalue(i), x1, y1) / linalg::Norml2(GetComm(), x1);
   }
 }
 
@@ -720,9 +719,9 @@ void SlepcEPSSolverBase::GetEigenvector(int i, ComplexVector &x) const
       "Must call SetOperators before using GetEigenvector for SLEPc eigenvalue solver!");
   PalacePetscCall(EPSGetEigenvector(eps, i, v0, nullptr));
   PalacePetscCall(FromPetscVec(v0, x));
-  if (xscale.get()[i] > 0.0)
+  if (xscale[i] > 0.0)
   {
-    x *= xscale.get()[i];
+    x *= xscale[i];
   }
 }
 
@@ -954,9 +953,9 @@ void SlepcPEPLinearSolver::GetEigenvector(int i, ComplexVector &x) const
       "Must call SetOperators before using GetEigenvector for SLEPc eigenvalue solver!");
   PalacePetscCall(EPSGetEigenvector(eps, i, v0, nullptr));
   PalacePetscCall(FromPetscVec(v0, x, 0, 2));
-  if (xscale.get()[i] > 0.0)
+  if (xscale[i] > 0.0)
   {
-    x *= xscale.get()[i];
+    x *= xscale[i];
   }
 }
 
@@ -1201,9 +1200,9 @@ void SlepcPEPSolverBase::GetEigenvector(int i, ComplexVector &x) const
       "Must call SetOperators before using GetEigenvector for SLEPc eigenvalue solver!");
   PalacePetscCall(PEPGetEigenpair(pep, i, nullptr, nullptr, v0, nullptr));
   PalacePetscCall(FromPetscVec(v0, x));
-  if (xscale.get()[i] > 0.0)
+  if (xscale[i] > 0.0)
   {
-    x *= xscale.get()[i];
+    x *= xscale[i];
   }
 }
 
@@ -1548,7 +1547,7 @@ int SlepcNEPSolverBase::Solve()
 std::complex<double> SlepcNEPSolverBase::GetEigenvalue(int i) const
 {
   PetscScalar l;
-  const int &j = perm.get()[i];
+  const int j = perm[i];
   PalacePetscCall(NEPGetEigenpair(nep, j, &l, nullptr, nullptr, nullptr));
   return l;
 }
@@ -1558,12 +1557,12 @@ void SlepcNEPSolverBase::GetEigenvector(int i, ComplexVector &x) const
   MFEM_VERIFY(
       v0,
       "Must call SetOperators before using GetEigenvector for SLEPc eigenvalue solver!");
-  const int &j = perm.get()[i];
+  const int j = perm[i];
   PalacePetscCall(NEPGetEigenpair(nep, j, nullptr, nullptr, v0, nullptr));
   PalacePetscCall(FromPetscVec(v0, x));
-  if (xscale.get()[i] > 0.0)
+  if (xscale[i] > 0.0)
   {
-    x *= xscale.get()[i];
+    x *= xscale[i];
   }
 }
 

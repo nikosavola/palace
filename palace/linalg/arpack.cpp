@@ -330,11 +330,11 @@ int ArpackEigenvalueSolver::SolveInternal(int n, std::complex<double> *r,
     // We never use pre-computed B * x in workd[ipntr[2] - 1].
     if (ido == 1 || ido == -1)
     {
-      ApplyOp(&workd.get()[ipntr[0] - 1], &workd.get()[ipntr[1] - 1]);
+      ApplyOp(&workd[ipntr[0] - 1], &workd[ipntr[1] - 1]);
     }
     else if (ido == 2)
     {
-      ApplyOpB(&workd.get()[ipntr[0] - 1], &workd.get()[ipntr[1] - 1]);
+      ApplyOpB(&workd[ipntr[0] - 1], &workd[ipntr[1] - 1]);
     }
     else if (ido == 99)
     {
@@ -482,8 +482,8 @@ std::complex<double> ArpackEigenvalueSolver::GetEigenvalue(int i) const
 {
   MFEM_VERIFY(eig && i >= 0 && i < nev,
               "Out of range eigenpair requested (i = " << i << ", nev = " << nev << ")!");
-  const int &j = perm.get()[i];
-  return eig.get()[j];
+  const int j = perm[i];
+  return eig[j];
 }
 
 void ArpackEigenvalueSolver::GetEigenvector(int i, ComplexVector &x) const
@@ -491,11 +491,11 @@ void ArpackEigenvalueSolver::GetEigenvector(int i, ComplexVector &x) const
   MFEM_VERIFY(eig && i >= 0 && i < nev,
               "Out of range eigenpair requested (i = " << i << ", nev = " << nev << ")!");
   MFEM_VERIFY(x.Size() == n, "Invalid size mismatch for provided eigenvector!");
-  const int &j = perm.get()[i];
+  const int j = perm[i];
   x.Set(V.get() + j * n, n, false);
-  if (xscale.get()[j] > 0.0)
+  if (xscale[j] > 0.0)
   {
-    x *= xscale.get()[j];
+    x *= xscale[j];
   }
 }
 
@@ -516,15 +516,15 @@ double ArpackEigenvalueSolver::GetError(int i, EigenvalueSolver::ErrorType type)
 {
   MFEM_VERIFY(eig && i >= 0 && i < nev,
               "Out of range eigenpair requested (i = " << i << ", nev = " << nev << ")!");
-  const int &j = perm.get()[i];
+  const int j = perm[i];
   switch (type)
   {
     case ErrorType::ABSOLUTE:
-      return res.get()[j];
+      return res[j];
     case ErrorType::RELATIVE:
-      return res.get()[j] / std::abs(eig.get()[j]);
+      return res[j] / std::abs(eig[j]);
     case ErrorType::BACKWARD:
-      return res.get()[j] / GetBackwardScaling(eig.get()[j]);
+      return res[j] / GetBackwardScaling(eig[j]);
   }
   return 0.0;
 }
@@ -536,8 +536,8 @@ void ArpackEigenvalueSolver::RescaleEigenvectors(int num_eig)
   for (int i = 0; i < num_eig; i++)
   {
     x1.Set(V.get() + i * n, n, false);
-    xscale.get()[i] = 1.0 / GetEigenvectorNorm(x1, y1);
-    res.get()[i] = GetResidualNorm(eig.get()[i], x1, y1) / linalg::Norml2(comm, x1);
+    xscale[i] = 1.0 / GetEigenvectorNorm(x1, y1);
+    res[i] = GetResidualNorm(eig[i], x1, y1) / linalg::Norml2(comm, x1);
   }
 }
 

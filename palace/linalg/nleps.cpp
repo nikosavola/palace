@@ -89,7 +89,7 @@ std::complex<double> NonLinearEigenvalueSolver::GetEigenvalue(int i) const
 {
   MFEM_VERIFY(i >= 0 && i < nev,
               "Out of range eigenpair requested (i = " << i << ", nev = " << nev << ")!");
-  const int &j = perm.get()[i];
+  const int j = perm[i];
   return eigenvalues[j];
 }
 
@@ -98,11 +98,11 @@ void NonLinearEigenvalueSolver::GetEigenvector(int i, ComplexVector &x) const
   MFEM_VERIFY(i >= 0 && i < nev,
               "Out of range eigenpair requested (i = " << i << ", nev = " << nev << ")!");
   MFEM_VERIFY(x.Size() == n, "Invalid size mismatch for provided eigenvector!");
-  const int &j = perm.get()[i];
+  const int j = perm[i];
   x = eigenvectors[j];
-  if (xscale.get()[j] > 0.0)
+  if (xscale[j] > 0.0)
   {
-    x *= xscale.get()[j];
+    x *= xscale[j];
   }
 }
 
@@ -123,15 +123,15 @@ double NonLinearEigenvalueSolver::GetError(int i, EigenvalueSolver::ErrorType ty
 {
   MFEM_VERIFY(i >= 0 && i < nev,
               "Out of range eigenpair requested (i = " << i << ", nev = " << nev << ")!");
-  const int &j = perm.get()[i];
+  const int j = perm[i];
   switch (type)
   {
     case ErrorType::ABSOLUTE:
-      return res.get()[j];
+      return res[j];
     case ErrorType::RELATIVE:
-      return res.get()[j] / std::abs(eigenvalues[j]);
+      return res[j] / std::abs(eigenvalues[j]);
     case ErrorType::BACKWARD:
-      return res.get()[j] / GetBackwardScaling(eigenvalues[j]);
+      return res[j] / GetBackwardScaling(eigenvalues[j]);
   }
   return 0.0;
 }
@@ -143,8 +143,8 @@ void NonLinearEigenvalueSolver::RescaleEigenvectors(int num_eig)
   for (int i = 0; i < num_eig; i++)
   {
     x1 = eigenvectors[i];
-    xscale.get()[i] = 1.0 / GetEigenvectorNorm(x1, y1);
-    res.get()[i] = GetResidualNorm(eigenvalues[i], x1, y1) / linalg::Norml2(comm, x1);
+    xscale[i] = 1.0 / GetEigenvectorNorm(x1, y1);
+    res[i] = GetResidualNorm(eigenvalues[i], x1, y1) / linalg::Norml2(comm, x1);
   }
 }
 
@@ -297,8 +297,8 @@ void QuasiNewtonSolver::SetInitialGuess()
     std::sort(indices.begin(), indices.end(),
               [&](const auto i, const auto j)
               {
-                const bool i_small = res.get()[i] <= threshold;
-                const bool j_small = res.get()[j] <= threshold;
+                const bool i_small = res[i] <= threshold;
+                const bool j_small = res[j] <= threshold;
                 if (i_small != j_small)
                 {
                   return i_small;
